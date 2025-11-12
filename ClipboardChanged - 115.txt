@@ -1,4 +1,4 @@
-﻿ClipboardChanged(type) {
+ClipboardChanged(type) {
     Global SQLiteDB, DBPath, IsCopying, ClipboardLock, ProcessingContext, TransactionActive, TransactionOwner, G_last_insert_rowid, G_last_insert_Main_ID, G_last_insert_Main_TableName
 	; 🔥 添加这个检查 - 任何非零的 ClipboardLock 都应该阻止执行
     if (ClipboardLock != 0) {
@@ -306,8 +306,9 @@
                         SizeStr := Round(TotalSize / (1024 * 1024 * 1024),2) . " GB"
                 }
               
-                Identifier := "📎"
-                Format := "CF_HDROP,📎"
+                ; 使用 GetFileTypeSymbol 函数获取标识符
+                Identifier := GetFileTypeSymbol(Path, FileExt)
+                Format := "CF_HDROP," . Identifier
                 if (FileExt != "") {
                     Format .= "," . FileExt
                 }
@@ -345,8 +346,9 @@
                     Identifier := "📁𝓟"
                     Format := "CF_UNICODETEXT,📁𝓟"
                 } else {
-                    Identifier := "📎𝓟"
-                    Format := "CF_UNICODETEXT,📎𝓟"
+                    ; 使用 GetFileTypeSymbol 函数获取标识符
+                    Identifier := GetFileTypeSymbol(FirstLine, FileExt) . "𝓟"
+                    Format := "CF_UNICODETEXT," . Identifier
                     if (FileExt != "") {
                         Format .= "," . FileExt
                     }
@@ -562,7 +564,7 @@
         Identifier := Identifier ? Identifier : ""
         Format := Format ? Format : ""
         Remark := Remark ? RegExReplace(Remark, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
-        Content := Content ? RegExReplace(Content, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
+        Content := Content ?RegExReplace(Content, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
         Group := Group ? RegExReplace(Group, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
         AppName := AppName ? RegExReplace(AppName, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : "未知应用"
         if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
@@ -585,7 +587,8 @@
         G_last_insert_rowid := ""
       
         if (ExistingID != "") {
-            UpdateSQL := "UPDATE 历史数据 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 类型 = '" . EscapedFormat . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 处理状态 = NULL, 提示时间 = NULL, 提示 = NULL WHERE ID = " . ExistingID . ";"
+            ; 🔥 修改：UPDATE 语句中 类型、分组、应用名称、标识 设为空
+            UpdateSQL := "UPDATE 历史数据 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 类型 = '', 分组 = '', 应用名称 = '', 标识 = '', 处理状态 = NULL, 提示时间 = NULL, 提示 = NULL WHERE ID = " . ExistingID . ";"
             while (RetryCount > 0) {
                 if (SQLiteDB.Exec(UpdateSQL)) {
                     Success := true
@@ -684,7 +687,8 @@
                 Return
             }
           
-            InsertMainSQL := "INSERT INTO 历史数据 (ID, 哈希值, 字节, 窗口详情, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 处理状态, 提示时间, 提示) VALUES (" . FinalID . ", '" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '" . EscapedFormat . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', NULL, NULL, NULL);"
+            ; 🔥 修改：INSERT 语句中 类型、分组、应用名称、标识 设为空字符串
+            InsertMainSQL := "INSERT INTO 历史数据 (ID, 哈希值, 字节, 窗口详情, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 标识, 处理状态, 提示时间, 提示) VALUES (" . FinalID . ", '" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '', '', '', NULL, NULL, NULL);"
           
             RetryCount := 3
             Success := false
@@ -753,11 +757,11 @@
             G_last_insert_Main_TableName := "历史数据"
         }
         
-        ; 🔥 属性插入部分 - 开始
+        ; 🔥 属性插入部分 - 开始（将 类型、分组、应用名称、标识 插入到关联属性表）
         Attributes := []
         Attributes.Push({Format: "星级", Value: "0"})
         
-        ; 🔥 新增：将类型字段拆分后插入到关联属性表
+        ; 将类型字段拆分后插入到关联属性表
         if (Format != "") {
             ; 拆分格式字符串（如 "CF_HDROP,📎,exe" -> ["CF_HDROP", "📎", "exe"]）
             FormatParts := StrSplit(Format, ",")
@@ -770,14 +774,30 @@
             }
         }
         
+        ; 将标识符也插入到关联属性表
+        if (Identifier != "") {
+            ; 拆分标识符（如 "🎧, ♫" -> ["🎧", "♫"]）
+            IdentifierParts := StrSplit(Identifier, ",")
+            Loop, % IdentifierParts.Length() {
+                IdValue := Trim(IdentifierParts[A_Index])
+                if (IdValue != "") {
+                    Attributes.Push({Format: "标识", Value: IdValue})
+                }
+            }
+        }
+        
         if (DataType = 1 && ClipData != "") {
             if (InStr(ClipData, ";") || InStr(ClipData, "{") || InStr(ClipData, "}") || InStr(ClipData, "function") || InStr(ClipData, "def ") || InStr(ClipData, "#include") || InStr(ClipData, "public ") || InStr(ClipData, "private ") || InStr(ClipData, "class ") || InStr(ClipData, "var ") || InStr(ClipData, "let ") || InStr(ClipData, "const ") || InStr(ClipData, "if (") || InStr(ClipData, "else") || InStr(ClipData, "for (") || InStr(ClipData, "while (")) {
                 Attributes.Push({Format: "标签", Value: "代码"})
             }
         }
+        
+        ; 将分组插入到关联属性表
         if (Group != "") {
             Attributes.Push({Format: "分组", Value: Group})
         }
+        
+        ; 将应用名称插入到关联属性表
         if (AppName != "" && AppName != "未知应用") {
             Attributes.Push({Format: "应用名称", Value: AppName})
             IsFolderPath := (RegExMatch(AppName, "^[A-Za-z]:\\.*$") && InStr(FileExist(AppName), "D"))
@@ -808,9 +828,7 @@
                 }
             }
         }
-        if (Identifier != "") {
-            Attributes.Push({Format: "标识", Value: Identifier})
-        }
+        
         for index, attr in Attributes {
             Result := InsertAttribute("历史数据", FinalID, attr.Format, attr.Value)
             ErrorMsg := Result.ErrorMsg
@@ -1072,4 +1090,38 @@ InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
     Result.AttrID := AttrID
     ; AddDebugLog("InsertAttribute 完成成功, TableName=" . TableName . ", AttrID=" . AttrID)
     Return Result
+}
+
+VerifyAllAttributes(DataID, TableName) {
+    Global SQLiteDB
+    
+    AttrCount := 0
+    
+    ; 检查主表是否存在
+    EscapedTableName := StrReplace(TableName, "'", "''")
+    CheckMainTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . EscapedTableName . "';"
+    MainTableResult := {}
+    if (!SQLiteDB.GetTable(CheckMainTableSQL, MainTableResult) || MainTableResult.RowCount = 0) {
+        MsgBox, 16, 错误, VerifyAllAttributes: 主表 " . TableName . " 不存在
+        Return -1
+    }
+    
+    ; 检查 DataID 是否存在
+    CheckDataIDSQL := "SELECT ID FROM [" . EscapedTableName . "] WHERE ID = " . DataID . " LIMIT 1;"
+    DataIDResult := {}
+    if (!SQLiteDB.GetTable(CheckDataIDSQL, DataIDResult) || DataIDResult.RowCount = 0) {
+        MsgBox, 16, 错误, VerifyAllAttributes: ID " . DataID . " 在表 " . TableName . " 中不存在
+        Return -1
+    }
+    
+    ; 检查属性关联表是否存在
+    PropTableName := TableName . "_关联属性"
+    CheckPropTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . PropTableName . "';"
+    PropTableResult := {}
+    if (!SQLiteDB.GetTable(CheckPropTableSQL, PropTableResult) || PropTableResult.RowCount = 0) {
+        MsgBox, 16, 错误, VerifyAllAttributes: 属性关联表 " . PropTableName . " 不存在
+        Return -1
+    }
+    
+    Return AttrCount
 }
