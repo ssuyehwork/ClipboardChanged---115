@@ -1125,3 +1125,147 @@ VerifyAllAttributes(DataID, TableName) {
     
     Return AttrCount
 }
+
+;===================|===================
+
+UpdateOptionsClassification() {
+    Global SQLiteDB
+    if (!SQLiteDB) {
+        ; AddDebugLog("Line " . A_LineNumber . ": 数据库连接失败")
+        MsgBox, 16, 错误, 错误 ID：342891 数据库连接失败！
+        Return false
+    }
+    
+    FieldsToProcess := ["类型", "标签", "星级", "分组"]  ; 确保是中文
+    ; AddDebugLog("Line " . A_LineNumber . ": 开始更新选项分类，从关联属性表获取")
+    
+    SQLiteDB.Exec("BEGIN TRANSACTION")
+    
+    ; 🔥 使用 DISTINCT 查询每种属性类型的唯一值
+    SQL := "SELECT DISTINCT 属性类型, 属性值 FROM 关联属性表 WHERE 属性类型 IN ('类型', '标签', '星级', '分组') AND 属性值 IS NOT NULL AND 属性值 != '' ORDER BY 属性类型, 属性值;"
+    Result := {}
+    if (!SQLiteDB.GetTable(SQL, Result)) {
+        ; AddDebugLog("Line " . A_LineNumber . ": 关联属性表查询失败: " . SQLiteDB._ErrMsg)
+        SQLiteDB.Exec("ROLLBACK")
+        Return false
+    }
+    
+    ; AddDebugLog("Line " . A_LineNumber . ": 从关联属性表查询到 " . Result.RowCount . " 条记录")
+    
+    ; 初始化字典，确保四个类型都存在键
+    TypeValues := {}
+    for index, Type in FieldsToProcess {
+        TypeValues[Type] := {}
+        ; AddDebugLog("Line " . A_LineNumber . ": 初始化Type: " . Type . " (index: " . (index+1) . ")")  ; 加日志确认Type
+    }
+    
+    ; 按属性类型分组收集唯一值
+    Loop, % Result.RowCount {
+        Type := Result.Rows[A_Index][1]
+        Value := Result.Rows[A_Index][2]
+        ; AddDebugLog("Line " . A_LineNumber . ": 处理记录 - Type: '" . Type . "', Value: '" . Value . "'")  ; 加日志看实际值
+        
+        if (!TypeValues.HasKey(Type)) {
+            TypeValues[Type] := {}
+        }
+        
+        CleanValue := Trim(Value)
+        if (CleanValue != "" && IsValidTagValue(CleanValue, Type)) {
+            TypeValues[Type][CleanValue] := true
+            ; AddDebugLog("Line " . A_LineNumber . ": 添加有效值: " . CleanValue . " 到 " . Type)
+        } else {
+            ; AddDebugLog("Line " . A_LineNumber . ": 跳过无效值: '" . CleanValue . "' 对于 " . Type)
+        }
+    }
+    
+    ; 固定表信息
+    TableName := "关联属性"
+    
+    ; 处理每个属性类型（确保四个类型都覆盖）
+    for index, Type in FieldsToProcess {
+        CategoryMain := "关联属性表_" . Type  ; 强制用中文Type
+        CategorySub := Type
+        
+        AllUniqueValues := TypeValues[Type]
+        ValidValueCount := AllUniqueValues.Count()
+        ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " (Main: " . CategoryMain . ") 找到 " . ValidValueCount . " 个有效值")
+        
+        ; 🔥 修改：始终先强制删除旧数据（无论是否有新值），确保不保留旧数据
+        DeleteSQL := "DELETE FROM 分类字典_One WHERE Category_Main = '" . StrReplace(CategoryMain, "'", "''") . "' AND Category_Sub = '" . StrReplace(CategorySub, "'", "''") . "';"
+        if (!SQLiteDB.Exec(DeleteSQL)) {
+            ; AddDebugLog("Line " . A_LineNumber . ": 删除旧记录失败: " . SQLiteDB._ErrMsg)
+            SQLiteDB.Exec("ROLLBACK")
+            Return false
+        } else {
+            ; AddDebugLog("Line " . A_LineNumber . ": 删除旧记录成功（强制删除旧数据 for " . CategoryMain . "）")
+        }
+        
+        ; 如果没有有效值 → 直接跳过插入（已删除旧数据）
+        if (ValidValueCount = 0) {
+            ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " 无有效值，已删除旧数据，不插入新记录")
+            continue
+        }
+        
+        ; 将对象键转换为数组
+        UniqueValuesArray := []
+        for Value in AllUniqueValues {
+            UniqueValuesArray.Push(Value)
+        }
+        
+        ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " 数组大小: " . UniqueValuesArray.Length())
+        
+        ; 排序
+        if (Type = "星级") {
+            SortStarRatingNumeric(UniqueValuesArray)
+            ; AddDebugLog("Line " . A_LineNumber . ": 星级排序完成")
+        } else {
+            Sort(UniqueValuesArray)
+            ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " 排序完成")
+        }
+        
+        ; 用管道符连接所有唯一值
+        CombinedValues := ""
+        Loop, % UniqueValuesArray.Length() {
+            CombinedValues .= (A_Index > 1 ? "|" : "") . UniqueValuesArray[A_Index]
+        }
+        
+        ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " 组合值: " . CombinedValues)
+        
+        HashValue := Crypt.Hash.Str(TableName . "|" . Type . "|" . CombinedValues, "SHA256")
+        ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " 哈希值: " . HashValue)
+        
+        ; 插入新记录
+        InsertSQL := "INSERT INTO 分类字典_One (Category_Main, Category_Sub, Record_Value) VALUES ('" . StrReplace(CategoryMain, "'", "''") . "', '" . StrReplace(CategorySub, "'", "''") . "', '" . StrReplace(CombinedValues, "'", "''") . "');"
+        ; AddDebugLog("Line " . A_LineNumber . ": 执行SQL: " . InsertSQL)
+        
+        if (!SQLiteDB.Exec(InsertSQL)) {
+            ErrorMsg := SQLiteDB._ErrMsg
+            ; AddDebugLog("Line " . A_LineNumber . ": 插入分类字典_One失败: " . ErrorMsg)
+            SQLiteDB.Exec("ROLLBACK")
+            MsgBox, 16, 错误, 插入失败: %ErrorMsg%
+            Return false
+        }
+        
+        ; AddDebugLog("Line " . A_LineNumber . ": 成功写入分类字典_One表 " . Type . " 数据")
+        
+        ; 验证插入结果
+        VerifySQL := "SELECT Record_Value FROM 分类字典_One WHERE Category_Main = '" . StrReplace(CategoryMain, "'", "''") . "' AND Category_Sub = '" . StrReplace(CategorySub, "'", "''") . "';"
+        VerifyResult := {}
+        if (SQLiteDB.GetTable(VerifySQL, VerifyResult) && VerifyResult.RowCount > 0) {
+            VerifyValue := VerifyResult.Rows[1][1]
+            ; AddDebugLog("Line " . A_LineNumber . ": 验证插入成功，读取到的值: " . VerifyValue)
+        } else {
+            ; AddDebugLog("Line " . A_LineNumber . ": 警告：插入后未能读取到数据！")
+        }
+    }
+    
+    if (!SQLiteDB.Exec("COMMIT")) {
+        ErrorMsg := SQLiteDB._ErrMsg
+        ; AddDebugLog("Line " . A_LineNumber . ": 提交事务失败: " . ErrorMsg)
+        SQLiteDB.Exec("ROLLBACK")
+        Return false
+    }
+    
+    ; AddDebugLog("Line " . A_LineNumber . ": 更新完成（所有属性类型已处理：空值删除，非空删除旧+插入新）")
+    Return true
+}
