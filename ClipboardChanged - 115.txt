@@ -776,14 +776,7 @@ ClipboardChanged(type) {
         
         ; 将标识符也插入到关联属性表
         if (Identifier != "") {
-            ; 拆分标识符（如 "🎧, ♫" -> ["🎧", "♫"]）
-            IdentifierParts := StrSplit(Identifier, ",")
-            Loop, % IdentifierParts.Length() {
-                IdValue := Trim(IdentifierParts[A_Index])
-                if (IdValue != "") {
-                    Attributes.Push({Format: "标识", Value: IdValue})
-                }
-            }
+            Attributes.Push({Format: "标识", Value: Identifier})
         }
         
         if (DataType = 1 && ClipData != "") {
@@ -876,13 +869,13 @@ GetFileTypeSymbol(filePath, fileExt) {
     imageExts := "jpg,jpeg,png,gif,bmp,tiff"
     docExts := "doc,docx,pdf,txt,rtf"
     if (InStr(lossyMusicExts, fileExt))
-        Return "🎧, ♫"
+        Return "🎧,♫"
     else if (InStr(losslessMusicExts, fileExt) || (fileExt = "m4a" && InStr(filePath, "ALAC")))
-        Return "🎼, ♫"
+        Return "🎼,♫"
     else if (InStr(uncompressedMusicExts, fileExt))
-        Return "📀, ♫"
+        Return "📀,♫"
     else if (InStr(specialMusicExts, fileExt))
-        Return "🎶, ♫"
+        Return "🎶,♫"
     else if (InStr(videoExts, fileExt))
         Return "🎥"
     else if (InStr(imageExts, fileExt))
