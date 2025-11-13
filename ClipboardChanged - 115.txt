@@ -757,21 +757,6 @@ ClipboardChanged(type) {
             G_last_insert_Main_TableName := "历史数据"
         }
         
-        ; 🔥 === 调试：插入属性前检查 ===
-        DebugCheckSQL := "SELECT ID, 标签, 类型, 分组, 应用名称, 标识 FROM 历史数据 WHERE ID = " . FinalID . ";"
-        DebugResult := {}
-        DebugMsg := ""
-        if (SQLiteDB.GetTable(DebugCheckSQL, DebugResult) && DebugResult.RowCount > 0) {
-            DebugMsg .= "【插入属性前】主表字段状态:`n"
-            DebugMsg .= "ID: " . DebugResult.Rows[1][1] . "`n"
-            DebugMsg .= "标签: [" . DebugResult.Rows[1][2] . "]`n"
-            DebugMsg .= "类型: [" . DebugResult.Rows[1][3] . "]`n"
-            DebugMsg .= "分组: [" . DebugResult.Rows[1][4] . "]`n"
-            DebugMsg .= "应用名称: [" . DebugResult.Rows[1][5] . "]`n"
-            DebugMsg .= "标识: [" . DebugResult.Rows[1][6] . "]`n"
-            MsgBox, %DebugMsg%
-        }
-        
         ; 🔥 属性插入部分 - 开始（将 类型、分组、应用名称、标识 插入到关联属性表）
         Attributes := []
         Attributes.Push({Format: "星级", Value: "0"})
@@ -838,39 +823,15 @@ ClipboardChanged(type) {
                 }
                 for index, Tag in Tags {
                     if (Tag != "" && Tag != "未知应用") {
-                        ; 🔥 改回 "标签" 进行测试
-                        Attributes.Push({Format: "标签", Value: Tag})
+                        Attributes.Push({Format: "关键字", Value: Tag})
                     }
                 }
             }
         }
         
-        ; 🔥 显示即将插入的属性
-        AttrListMsg := "【准备插入的属性列表】:`n"
         for index, attr in Attributes {
-            AttrListMsg .= index . ". Format=[" . attr.Format . "], Value=[" . attr.Value . "]`n"
-        }
-        MsgBox, %AttrListMsg%
-        
-        ; 🔥 逐个插入属性并监控
-        for index, attr in Attributes {
-            ; 插入前记录
-            BeforeInsert := "准备插入第 " . index . " 个属性:`nFormat=[" . attr.Format . "]`nValue=[" . attr.Value . "]"
-            
             Result := InsertAttribute("历史数据", FinalID, attr.Format, attr.Value)
             ErrorMsg := Result.ErrorMsg
-            
-            ; 插入后立即检查
-            if (attr.Format = "标签") {
-                CheckSQL := "SELECT 标签 FROM 历史数据 WHERE ID = " . FinalID . ";"
-                CheckResult := {}
-                if (SQLiteDB.GetTable(CheckSQL, CheckResult) && CheckResult.RowCount > 0) {
-                    MainTableTag := CheckResult.Rows[1][1]
-                    AfterInsert := BeforeInsert . "`n`n【插入后检查】`n主表'标签'字段值: [" . MainTableTag . "]"
-                    MsgBox, %AfterInsert%
-                }
-            }
-            
             if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
                 RollbackSafeTransaction("ClipboardChanged")
                 MsgBox, 16, 错误, 错误 ID：2125567 插入属性失败: %ErrorMsg%
@@ -878,37 +839,6 @@ ClipboardChanged(type) {
                 Return
             }
         }
-        
-        ; 🔥 所有属性插入完成后检查
-        FinalCheckSQL := "SELECT ID, 标签, 类型, 分组, 应用名称, 标识 FROM 历史数据 WHERE ID = " . FinalID . ";"
-        FinalResult := {}
-        FinalMsg := ""
-        if (SQLiteDB.GetTable(FinalCheckSQL, FinalResult) && FinalResult.RowCount > 0) {
-            FinalMsg .= "【所有属性插入后】主表字段状态:`n"
-            FinalMsg .= "ID: " . FinalResult.Rows[1][1] . "`n"
-            FinalMsg .= "标签: [" . FinalResult.Rows[1][2] . "]`n"
-            FinalMsg .= "类型: [" . FinalResult.Rows[1][3] . "]`n"
-            FinalMsg .= "分组: [" . FinalResult.Rows[1][4] . "]`n"
-            FinalMsg .= "应用名称: [" . FinalResult.Rows[1][5] . "]`n"
-            FinalMsg .= "标识: [" . FinalResult.Rows[1][6] . "]`n"
-            MsgBox, %FinalMsg%
-        }
-        
-        ; 🔥 检查关联属性表
-        AttrCheckSQL := "SELECT a.属性类型, a.属性值, a.ID FROM 关联属性表 a INNER JOIN 历史数据_关联属性 p ON a.ID = p.属性ID WHERE p.ID = " . FinalID . ";"
-        AttrCheckResult := {}
-        AttrMsg := "【关联属性表中的记录】:`n"
-        if (SQLiteDB.GetTable(AttrCheckSQL, AttrCheckResult) && AttrCheckResult.RowCount > 0) {
-            Loop, % AttrCheckResult.RowCount {
-                AttrType := AttrCheckResult.Rows[A_Index][1]
-                AttrVal := AttrCheckResult.Rows[A_Index][2]
-                AttrID := AttrCheckResult.Rows[A_Index][3]
-                AttrMsg .= A_Index . ". 属性类型=[" . AttrType . "], 属性值=[" . AttrVal . "], ID=[" . AttrID . "]`n"
-            }
-        } else {
-            AttrMsg .= "（没有找到任何关联属性）"
-        }
-        MsgBox, %AttrMsg%
         ; 🔥 属性插入部分 - 结束
         
         return
@@ -932,4 +862,33 @@ ClipboardChanged(type) {
         SetTimer, WatchDatabaseDir, 3000
     }
     Return
+}
+
+GetFileTypeSymbol(filePath, fileExt) {
+    if (InStr(FileExist(filePath), "D")) {
+        Return "📁"
+    }
+    lossyMusicExts := "mp3,aac,m4a,ogg"
+    losslessMusicExts := "flac,alac,ape"
+    uncompressedMusicExts := "wav,aiff"
+    specialMusicExts := "dsf,dff,mid"
+    videoExts := "mp4,avi,mkv,wmv,flv,mov"
+    imageExts := "jpg,jpeg,png,gif,bmp,tiff"
+    docExts := "doc,docx,pdf,txt,rtf"
+    if (InStr(lossyMusicExts, fileExt))
+        Return "🎧, ♫"
+    else if (InStr(losslessMusicExts, fileExt) || (fileExt = "m4a" && InStr(filePath, "ALAC")))
+        Return "🎼, ♫"
+    else if (InStr(uncompressedMusicExts, fileExt))
+        Return "📀, ♫"
+    else if (InStr(specialMusicExts, fileExt))
+        Return "🎶, ♫"
+    else if (InStr(videoExts, fileExt))
+        Return "🎥"
+    else if (InStr(imageExts, fileExt))
+        Return "🖼️"
+    else if (InStr(docExts, fileExt))
+        Return "📎"
+    else
+        Return "📎"
 }
