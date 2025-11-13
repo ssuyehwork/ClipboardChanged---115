@@ -567,7 +567,7 @@ ClipboardChanged(type) {
         Content := Content ?RegExReplace(Content, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
         Group := Group ? RegExReplace(Group, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
         AppName := AppName ? RegExReplace(AppName, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : "未知应用"
-        if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
+        if (RegExMatch(WindowTitle, "(.+)\s*-\s*(.+)$", Match)) {
             AppName := Trim(Match2)
         } else {
             AppName := WindowTitle ? WindowTitle : "未知应用"
@@ -757,6 +757,21 @@ ClipboardChanged(type) {
             G_last_insert_Main_TableName := "历史数据"
         }
         
+        ; 🔥 === 调试：插入属性前检查 ===
+        DebugCheckSQL := "SELECT ID, 标签, 类型, 分组, 应用名称, 标识 FROM 历史数据 WHERE ID = " . FinalID . ";"
+        DebugResult := {}
+        DebugMsg := ""
+        if (SQLiteDB.GetTable(DebugCheckSQL, DebugResult) && DebugResult.RowCount > 0) {
+            DebugMsg .= "【插入属性前】主表字段状态:`n"
+            DebugMsg .= "ID: " . DebugResult.Rows[1][1] . "`n"
+            DebugMsg .= "标签: [" . DebugResult.Rows[1][2] . "]`n"
+            DebugMsg .= "类型: [" . DebugResult.Rows[1][3] . "]`n"
+            DebugMsg .= "分组: [" . DebugResult.Rows[1][4] . "]`n"
+            DebugMsg .= "应用名称: [" . DebugResult.Rows[1][5] . "]`n"
+            DebugMsg .= "标识: [" . DebugResult.Rows[1][6] . "]`n"
+            MsgBox, %DebugMsg%
+        }
+        
         ; 🔥 属性插入部分 - 开始（将 类型、分组、应用名称、标识 插入到关联属性表）
         Attributes := []
         Attributes.Push({Format: "星级", Value: "0"})
@@ -788,7 +803,7 @@ ClipboardChanged(type) {
         
         if (DataType = 1 && ClipData != "") {
             if (InStr(ClipData, ";") || InStr(ClipData, "{") || InStr(ClipData, "}") || InStr(ClipData, "function") || InStr(ClipData, "def ") || InStr(ClipData, "#include") || InStr(ClipData, "public ") || InStr(ClipData, "private ") || InStr(ClipData, "class ") || InStr(ClipData, "var ") || InStr(ClipData, "let ") || InStr(ClipData, "const ") || InStr(ClipData, "if (") || InStr(ClipData, "else") || InStr(ClipData, "for (") || InStr(ClipData, "while (")) {
-                Attributes.Push({Format: "标签", Value: "代码"})
+                Attributes.Push({Format: "关键字", Value: "代码"})
             }
         }
         
@@ -803,7 +818,7 @@ ClipboardChanged(type) {
             IsFolderPath := (RegExMatch(AppName, "^[A-Za-z]:\\.*$") && InStr(FileExist(AppName), "D"))
             if (!IsFolderPath) {
                 Tags := []
-                if (RegExMatch(AppName, "^(.+?)\s*-\s*(.+)$", Match)) {
+                if (RegExMatch(AppName, "^(.+)\s*-\s*(.+)$", Match)) {
                     FirstPart := Trim(Match1)
                     SecondPart := Trim(Match2)
                     if (!RegExMatch(FirstPart, "\.[a-zA-Z0-9]{1,4}$")) {
@@ -823,15 +838,39 @@ ClipboardChanged(type) {
                 }
                 for index, Tag in Tags {
                     if (Tag != "" && Tag != "未知应用") {
+                        ; 🔥 改回 "标签" 进行测试
                         Attributes.Push({Format: "标签", Value: Tag})
                     }
                 }
             }
         }
         
+        ; 🔥 显示即将插入的属性
+        AttrListMsg := "【准备插入的属性列表】:`n"
         for index, attr in Attributes {
+            AttrListMsg .= index . ". Format=[" . attr.Format . "], Value=[" . attr.Value . "]`n"
+        }
+        MsgBox, %AttrListMsg%
+        
+        ; 🔥 逐个插入属性并监控
+        for index, attr in Attributes {
+            ; 插入前记录
+            BeforeInsert := "准备插入第 " . index . " 个属性:`nFormat=[" . attr.Format . "]`nValue=[" . attr.Value . "]"
+            
             Result := InsertAttribute("历史数据", FinalID, attr.Format, attr.Value)
             ErrorMsg := Result.ErrorMsg
+            
+            ; 插入后立即检查
+            if (attr.Format = "标签") {
+                CheckSQL := "SELECT 标签 FROM 历史数据 WHERE ID = " . FinalID . ";"
+                CheckResult := {}
+                if (SQLiteDB.GetTable(CheckSQL, CheckResult) && CheckResult.RowCount > 0) {
+                    MainTableTag := CheckResult.Rows[1][1]
+                    AfterInsert := BeforeInsert . "`n`n【插入后检查】`n主表'标签'字段值: [" . MainTableTag . "]"
+                    MsgBox, %AfterInsert%
+                }
+            }
+            
             if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
                 RollbackSafeTransaction("ClipboardChanged")
                 MsgBox, 16, 错误, 错误 ID：2125567 插入属性失败: %ErrorMsg%
@@ -839,6 +878,37 @@ ClipboardChanged(type) {
                 Return
             }
         }
+        
+        ; 🔥 所有属性插入完成后检查
+        FinalCheckSQL := "SELECT ID, 标签, 类型, 分组, 应用名称, 标识 FROM 历史数据 WHERE ID = " . FinalID . ";"
+        FinalResult := {}
+        FinalMsg := ""
+        if (SQLiteDB.GetTable(FinalCheckSQL, FinalResult) && FinalResult.RowCount > 0) {
+            FinalMsg .= "【所有属性插入后】主表字段状态:`n"
+            FinalMsg .= "ID: " . FinalResult.Rows[1][1] . "`n"
+            FinalMsg .= "标签: [" . FinalResult.Rows[1][2] . "]`n"
+            FinalMsg .= "类型: [" . FinalResult.Rows[1][3] . "]`n"
+            FinalMsg .= "分组: [" . FinalResult.Rows[1][4] . "]`n"
+            FinalMsg .= "应用名称: [" . FinalResult.Rows[1][5] . "]`n"
+            FinalMsg .= "标识: [" . FinalResult.Rows[1][6] . "]`n"
+            MsgBox, %FinalMsg%
+        }
+        
+        ; 🔥 检查关联属性表
+        AttrCheckSQL := "SELECT a.属性类型, a.属性值, a.ID FROM 关联属性表 a INNER JOIN 历史数据_关联属性 p ON a.ID = p.属性ID WHERE p.ID = " . FinalID . ";"
+        AttrCheckResult := {}
+        AttrMsg := "【关联属性表中的记录】:`n"
+        if (SQLiteDB.GetTable(AttrCheckSQL, AttrCheckResult) && AttrCheckResult.RowCount > 0) {
+            Loop, % AttrCheckResult.RowCount {
+                AttrType := AttrCheckResult.Rows[A_Index][1]
+                AttrVal := AttrCheckResult.Rows[A_Index][2]
+                AttrID := AttrCheckResult.Rows[A_Index][3]
+                AttrMsg .= A_Index . ". 属性类型=[" . AttrType . "], 属性值=[" . AttrVal . "], ID=[" . AttrID . "]`n"
+            }
+        } else {
+            AttrMsg .= "（没有找到任何关联属性）"
+        }
+        MsgBox, %AttrMsg%
         ; 🔥 属性插入部分 - 结束
         
         return
@@ -862,1102 +932,4 @@ ClipboardChanged(type) {
         SetTimer, WatchDatabaseDir, 3000
     }
     Return
-}
-
-InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
-    Global SQLiteDB, DBPath
-    Result := {}
-    Result.Success := 0
-    Result.ErrorMsg := ""
-    Result.AttrID := ""
-
-    ; AddDebugLog("InsertAttribute 开始, TableName=" . TableName . ", DataID=" . DataID . ", AttrFormat=" . AttrFormat . ", AttrValue=" . AttrValue . ", DataFormat=" . DataFormat)
-
-    if (!SQLiteDB) {
-        Result.ErrorMsg := "ERROR_202547: SQLiteDB 未初始化"
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-
-    if (!CheckDBUnlocked(DBPath)) {
-        Result.ErrorMsg := "4351898: 数据库被锁定"
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-
-    ; 验证表名合法性（防止SQL注入）
-    if (TableName = "" || RegExMatch(TableName, "[;'\[\]]")) {
-        Result.ErrorMsg := "ERROR_202552: 表名非法: " . TableName
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-
-    ; 验证主表是否存在（注册登记主表）
-    EscapedTableName := StrReplace(TableName, "'", "''")
-    CheckMainTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . EscapedTableName . "';"
-    MainTableResult := {}
-    if (!SQLiteDB.GetTable(CheckMainTableSQL, MainTableResult) || MainTableResult.RowCount = 0) {
-        Result.ErrorMsg := "ERROR_202553: 主表 " . TableName . " 不存在"
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-
-    ; 验证ID是否存在于主表中
-    CheckDataIDSQL := "SELECT ID FROM [" . EscapedTableName . "] WHERE ID = " . DataID . " LIMIT 1;"
-    DataIDResult := {}
-    if (!SQLiteDB.GetTable(CheckDataIDSQL, DataIDResult) || DataIDResult.RowCount = 0) {
-        Result.ErrorMsg := "ERROR_6247458: ID " . DataID . " 在表 " . TableName . " 中不存在"
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-
-    PropTableName := TableName . "_关联属性"
-
-    ; 检查关联属性表是否存在
-    CheckPropTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . PropTableName . "';"
-    PropTableResult := {}
-    if (!SQLiteDB.GetTable(CheckPropTableSQL, PropTableResult) || PropTableResult.RowCount = 0) {
-        Result.ErrorMsg := "ERROR_5354041: 属性关联表 " . PropTableName . " 不存在"
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-    ; AddDebugLog("属性关联表检查通过: " . PropTableName)
-
-    AttrFormat := Trim(AttrFormat)
-    AttrValue := Trim(AttrValue)
-
-    if (AttrFormat = "" || AttrValue = "") {
-        Result.Success := 1
-        Result.ErrorMsg := "属性格式或值为空，跳过"
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-
-    if (StrLen(AttrValue) > 1000) {
-        AttrValue := SubStr(AttrValue, 1, 1000)
-    }
-
-    if (AttrFormat = "星级" && AttrValue = "0") {
-        Result.Success := 1
-        Result.ErrorMsg := "星级为 0，跳过插入"
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-
-    EscapedAttrFormat := StrReplace(AttrFormat, "'", "''")
-    EscapedAttrValue := StrReplace(AttrValue, "'", "''")
-    EscapedDataFormat := StrReplace(DataFormat, "'", "''")
-    
-    ; 检查属性是否已存在（在全局关联属性表中）
-    GetAttrIDSQL := "SELECT Local_ID, ID FROM 关联属性表 WHERE 属性类型 = '" . EscapedAttrFormat . "' AND 属性值 = '" . EscapedAttrValue . "' LIMIT 1;"
-    AttrResult := {}
-    AttrID := ""
-    
-    SQLiteDB.Exec("PRAGMA busy_timeout = 5000;")
-
-    if (SQLiteDB.GetTable(GetAttrIDSQL, AttrResult) && AttrResult.RowCount > 0) {
-        AttrID := AttrResult.Rows[1][2]  ; 获取 ID 字段（TEXT）
-        ; AddDebugLog("找到现有属性 ID: " . AttrID)
-    } else {
-        ; AddDebugLog("未找到现有属性, 准备插入新属性")
-        ; 插入时包含格式字段
-        if (DataFormat != "") {
-            InsertAttrSQL := "INSERT OR IGNORE INTO 关联属性表 (属性类型, 属性值, 类型) VALUES ('" . EscapedAttrFormat . "', '" . EscapedAttrValue . "', '" . EscapedDataFormat . "');"
-        } else {
-            InsertAttrSQL := "INSERT OR IGNORE INTO 关联属性表 (属性类型, 属性值) VALUES ('" . EscapedAttrFormat . "', '" . EscapedAttrValue . "');"
-        }
-        
-        RetryCount := 5
-        Success := false
-        while (RetryCount > 0) {
-            if (SQLiteDB.Exec(InsertAttrSQL)) {
-                Success := true
-                ; AddDebugLog("插入关联属性表成功")
-                break
-            }
-            ErrorMsg := SQLiteDB._ErrMsg()
-            ; AddDebugLog("插入关联属性表失败 (重试 " . (6-RetryCount) . "): " . ErrorMsg)
-            if (InStr(ErrorMsg, "SQLITE_BUSY")) {
-                Sleep, 200
-                RetryCount--
-                continue
-            }
-            Result.ErrorMsg := "ERROR_202548: 插入关联属性表失败: " . ErrorMsg
-            Return Result
-        }
-        
-        if (!Success) {
-            Result.ErrorMsg := "ERROR_202548: 插入关联属性表失败，超过重试次数"
-            ; AddDebugLog(Result.ErrorMsg)
-            Return Result
-        }
-        
-        ; 获取新插入的 Local_ID 和 ID
-        GetAttrIDSQL := "SELECT Local_ID, ID FROM 关联属性表 WHERE 属性类型 = '" . EscapedAttrFormat . "' AND 属性值 = '" . EscapedAttrValue . "' LIMIT 1;"
-        RetryCount := 5
-        while (RetryCount > 0) {
-            if (SQLiteDB.GetTable(GetAttrIDSQL, AttrResult) && AttrResult.RowCount > 0) {
-                AttrID := AttrResult.Rows[1][2]  ; 获取 ID 字段
-                if (AttrID = "") {
-                    AttrID := AttrResult.Rows[1][1]  ; 如果 ID 为空， fallback 到 Local_ID
-                    ; 更新 ID 字段为 Local_ID 的文本形式
-                    UpdateIDSQL := "UPDATE 关联属性表 SET ID = '" . AttrID . "' WHERE Local_ID = " . AttrResult.Rows[1][1] . ";"
-                    if (!SQLiteDB.Exec(UpdateIDSQL)) {
-                        ErrorMsg := SQLiteDB._ErrMsg()
-                        Result.ErrorMsg := "ERROR_202549: 更新属性 ID 失败: " . ErrorMsg
-                        ; AddDebugLog(Result.ErrorMsg)
-                        Return Result
-                    }
-                    ; AddDebugLog("更新属性 ID 成功: " . AttrID)
-                }
-                ; AddDebugLog("获取新属性 ID: " . AttrID)
-                break
-            }
-            Sleep, 100
-            RetryCount--
-        }
-        
-        if (AttrID = "") {
-            Result.ErrorMsg := "ERROR_202549: 插入后未找到属性 ID，属性类型='" . AttrFormat . "', 属性值='" . AttrValue . "'"
-            ; AddDebugLog(Result.ErrorMsg)
-            Return Result
-        }
-    }
-
-    if (AttrID = "") {
-        Result.ErrorMsg := "ERROR_202549: 无效的属性 ID"
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-
-    ; 检查属性关联是否已存在（动态PropTableName）
-    EscapedPropTable := StrReplace(PropTableName, "'", "''")
-    CheckExistSQL := "SELECT COUNT(*) FROM [" . EscapedPropTable . "] WHERE 属性ID = '" . StrReplace(AttrID, "'", "''") . "' AND ID = " . DataID . ";"
-    CheckResult := {}
-    ExistingCount := 0
-    
-    if (SQLiteDB.GetTable(CheckExistSQL, CheckResult) && CheckResult.RowCount > 0) {
-        ExistingCount := CheckResult.Rows[1][1]
-        if (ExistingCount > 0) {
-            Result.Success := 1
-            Result.ErrorMsg := "属性关联已存在"
-            Result.AttrID := AttrID
-            ; AddDebugLog("属性关联已存在")
-            Return Result
-        }
-    } else {
-        ErrorMsg := SQLiteDB._ErrMsg()
-        Result.ErrorMsg := "ERROR_3744312: 检查属性关联失败: " . ErrorMsg
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-    ; AddDebugLog("属性关联不存在, 准备插入")
-
-    ; 插入属性关联时也包含格式字段
-    if (DataFormat != "") {
-        InsertAssocSQL := "INSERT INTO [" . EscapedPropTable . "] (属性ID, ID, 格式) VALUES ('" . StrReplace(AttrID, "'", "''") . "', " . DataID . ", '" . EscapedDataFormat . "');"
-    } else {
-        InsertAssocSQL := "INSERT INTO [" . EscapedPropTable . "] (属性ID, ID) VALUES ('" . StrReplace(AttrID, "'", "''") . "', " . DataID . ");"
-    }
-    
-    RetryCount := 5
-    Success := false
-    while (RetryCount > 0) {
-        if (SQLiteDB.Exec(InsertAssocSQL)) {
-            Success := true
-            ; AddDebugLog("插入属性关联成功")
-            break
-        }
-        ErrorMsg := SQLiteDB._ErrMsg()
-        ; AddDebugLog("插入属性关联失败 (重试 " . (6-RetryCount) . "): " . ErrorMsg)
-        if (InStr(ErrorMsg, "SQLITE_BUSY")) {
-            Sleep, 200
-            RetryCount--
-            continue
-        }
-        Result.ErrorMsg := "2716957: 插入属性关联失败: " . ErrorMsg
-        Return Result
-    }
-    
-    if (!Success) {
-        Result.ErrorMsg := "2720504: 插入属性关联失败，超过重试次数"
-        ; AddDebugLog(Result.ErrorMsg)
-        Return Result
-    }
-
-    Result.Success := 1
-    Result.ErrorMsg := ""
-    Result.AttrID := AttrID
-    ; AddDebugLog("InsertAttribute 完成成功, TableName=" . TableName . ", AttrID=" . AttrID)
-    Return Result
-}
-
-VerifyAllAttributes(DataID, TableName) {
-    Global SQLiteDB
-    
-    AttrCount := 0
-    
-    ; 检查主表是否存在
-    EscapedTableName := StrReplace(TableName, "'", "''")
-    CheckMainTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . EscapedTableName . "';"
-    MainTableResult := {}
-    if (!SQLiteDB.GetTable(CheckMainTableSQL, MainTableResult) || MainTableResult.RowCount = 0) {
-        MsgBox, 16, 错误, VerifyAllAttributes: 主表 " . TableName . " 不存在
-        Return -1
-    }
-    
-    ; 检查 DataID 是否存在
-    CheckDataIDSQL := "SELECT ID FROM [" . EscapedTableName . "] WHERE ID = " . DataID . " LIMIT 1;"
-    DataIDResult := {}
-    if (!SQLiteDB.GetTable(CheckDataIDSQL, DataIDResult) || DataIDResult.RowCount = 0) {
-        MsgBox, 16, 错误, VerifyAllAttributes: ID " . DataID . " 在表 " . TableName . " 中不存在
-        Return -1
-    }
-    
-    ; 检查属性关联表是否存在
-    PropTableName := TableName . "_关联属性"
-    CheckPropTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . PropTableName . "';"
-    PropTableResult := {}
-    if (!SQLiteDB.GetTable(CheckPropTableSQL, PropTableResult) || PropTableResult.RowCount = 0) {
-        MsgBox, 16, 错误, VerifyAllAttributes: 属性关联表 " . PropTableName . " 不存在
-        Return -1
-    }
-    
-    Return AttrCount
-}
-
-;===================|===================
-
-UpdateOptionsClassification() {
-    Global SQLiteDB
-    if (!SQLiteDB) {
-        ; AddDebugLog("Line " . A_LineNumber . ": 数据库连接失败")
-        MsgBox, 16, 错误, 错误 ID：342891 数据库连接失败！
-        Return false
-    }
-    
-    FieldsToProcess := ["类型", "标签", "星级", "分组"]  ; 确保是中文
-    ; AddDebugLog("Line " . A_LineNumber . ": 开始更新选项分类，从关联属性表获取")
-    
-    SQLiteDB.Exec("BEGIN TRANSACTION")
-    
-    ; 🔥 使用 DISTINCT 查询每种属性类型的唯一值
-    SQL := "SELECT DISTINCT 属性类型, 属性值 FROM 关联属性表 WHERE 属性类型 IN ('类型', '标签', '星级', '分组') AND 属性值 IS NOT NULL AND 属性值 != '' ORDER BY 属性类型, 属性值;"
-    Result := {}
-    if (!SQLiteDB.GetTable(SQL, Result)) {
-        ; AddDebugLog("Line " . A_LineNumber . ": 关联属性表查询失败: " . SQLiteDB._ErrMsg)
-        SQLiteDB.Exec("ROLLBACK")
-        Return false
-    }
-    
-    ; AddDebugLog("Line " . A_LineNumber . ": 从关联属性表查询到 " . Result.RowCount . " 条记录")
-    
-    ; 初始化字典，确保四个类型都存在键
-    TypeValues := {}
-    for index, Type in FieldsToProcess {
-        TypeValues[Type] := {}
-        ; AddDebugLog("Line " . A_LineNumber . ": 初始化Type: " . Type . " (index: " . (index+1) . ")")  ; 加日志确认Type
-    }
-    
-    ; 按属性类型分组收集唯一值
-    Loop, % Result.RowCount {
-        Type := Result.Rows[A_Index][1]
-        Value := Result.Rows[A_Index][2]
-        ; AddDebugLog("Line " . A_LineNumber . ": 处理记录 - Type: '" . Type . "', Value: '" . Value . "'")  ; 加日志看实际值
-        
-        if (!TypeValues.HasKey(Type)) {
-            TypeValues[Type] := {}
-        }
-        
-        CleanValue := Trim(Value)
-        if (CleanValue != "" && IsValidTagValue(CleanValue, Type)) {
-            TypeValues[Type][CleanValue] := true
-            ; AddDebugLog("Line " . A_LineNumber . ": 添加有效值: " . CleanValue . " 到 " . Type)
-        } else {
-            ; AddDebugLog("Line " . A_LineNumber . ": 跳过无效值: '" . CleanValue . "' 对于 " . Type)
-        }
-    }
-    
-    ; 固定表信息
-    TableName := "关联属性"
-    
-    ; 处理每个属性类型（确保四个类型都覆盖）
-    for index, Type in FieldsToProcess {
-        CategoryMain := "关联属性表_" . Type  ; 强制用中文Type
-        CategorySub := Type
-        
-        AllUniqueValues := TypeValues[Type]
-        ValidValueCount := AllUniqueValues.Count()
-        ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " (Main: " . CategoryMain . ") 找到 " . ValidValueCount . " 个有效值")
-        
-        ; 🔥 修改：始终先强制删除旧数据（无论是否有新值），确保不保留旧数据
-        DeleteSQL := "DELETE FROM 分类字典_One WHERE Category_Main = '" . StrReplace(CategoryMain, "'", "''") . "' AND Category_Sub = '" . StrReplace(CategorySub, "'", "''") . "';"
-        if (!SQLiteDB.Exec(DeleteSQL)) {
-            ; AddDebugLog("Line " . A_LineNumber . ": 删除旧记录失败: " . SQLiteDB._ErrMsg)
-            SQLiteDB.Exec("ROLLBACK")
-            Return false
-        } else {
-            ; AddDebugLog("Line " . A_LineNumber . ": 删除旧记录成功（强制删除旧数据 for " . CategoryMain . "）")
-        }
-        
-        ; 如果没有有效值 → 直接跳过插入（已删除旧数据）
-        if (ValidValueCount = 0) {
-            ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " 无有效值，已删除旧数据，不插入新记录")
-            continue
-        }
-        
-        ; 将对象键转换为数组
-        UniqueValuesArray := []
-        for Value in AllUniqueValues {
-            UniqueValuesArray.Push(Value)
-        }
-        
-        ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " 数组大小: " . UniqueValuesArray.Length())
-        
-        ; 排序
-        if (Type = "星级") {
-            SortStarRatingNumeric(UniqueValuesArray)
-            ; AddDebugLog("Line " . A_LineNumber . ": 星级排序完成")
-        } else {
-            Sort(UniqueValuesArray)
-            ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " 排序完成")
-        }
-        
-        ; 用管道符连接所有唯一值
-        CombinedValues := ""
-        Loop, % UniqueValuesArray.Length() {
-            CombinedValues .= (A_Index > 1 ? "|" : "") . UniqueValuesArray[A_Index]
-        }
-        
-        ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " 组合值: " . CombinedValues)
-        
-        HashValue := Crypt.Hash.Str(TableName . "|" . Type . "|" . CombinedValues, "SHA256")
-        ; AddDebugLog("Line " . A_LineNumber . ": 属性类型 " . Type . " 哈希值: " . HashValue)
-        
-        ; 插入新记录
-        InsertSQL := "INSERT INTO 分类字典_One (Category_Main, Category_Sub, Record_Value) VALUES ('" . StrReplace(CategoryMain, "'", "''") . "', '" . StrReplace(CategorySub, "'", "''") . "', '" . StrReplace(CombinedValues, "'", "''") . "');"
-        ; AddDebugLog("Line " . A_LineNumber . ": 执行SQL: " . InsertSQL)
-        
-        if (!SQLiteDB.Exec(InsertSQL)) {
-            ErrorMsg := SQLiteDB._ErrMsg
-            ; AddDebugLog("Line " . A_LineNumber . ": 插入分类字典_One失败: " . ErrorMsg)
-            SQLiteDB.Exec("ROLLBACK")
-            MsgBox, 16, 错误, 插入失败: %ErrorMsg%
-            Return false
-        }
-        
-        ; AddDebugLog("Line " . A_LineNumber . ": 成功写入分类字典_One表 " . Type . " 数据")
-        
-        ; 验证插入结果
-        VerifySQL := "SELECT Record_Value FROM 分类字典_One WHERE Category_Main = '" . StrReplace(CategoryMain, "'", "''") . "' AND Category_Sub = '" . StrReplace(CategorySub, "'", "''") . "';"
-        VerifyResult := {}
-        if (SQLiteDB.GetTable(VerifySQL, VerifyResult) && VerifyResult.RowCount > 0) {
-            VerifyValue := VerifyResult.Rows[1][1]
-            ; AddDebugLog("Line " . A_LineNumber . ": 验证插入成功，读取到的值: " . VerifyValue)
-        } else {
-            ; AddDebugLog("Line " . A_LineNumber . ": 警告：插入后未能读取到数据！")
-        }
-    }
-    
-    if (!SQLiteDB.Exec("COMMIT")) {
-        ErrorMsg := SQLiteDB._ErrMsg
-        ; AddDebugLog("Line " . A_LineNumber . ": 提交事务失败: " . ErrorMsg)
-        SQLiteDB.Exec("ROLLBACK")
-        Return false
-    }
-    
-    ; AddDebugLog("Line " . A_LineNumber . ": 更新完成（所有属性类型已处理：空值删除，非空删除旧+插入新）")
-    Return true
-}
-
-;===================|===================
-
-LoadData() {
-    Global SQLiteDB, CachedFieldsStr, CachedViewFields, CachedFieldToIndex, CachedTableName, CurrentPage, CustomStartDate, CustomEndDate, DisplayFields, FilterSource, FilterGroupCombo, FilterType, FilterKeyword, FilterDate, FilterRating, FilterFavorite, FilterDisable, FilterPinned, FilterSearch, FilterAccessTimeBox, SortByAccess, TotalPages, TotalRows, FilterIDNum, ManageMode, FilterProcessStatus
-    
-    Static LastQueryTable := ""
-    Static LastWhereClause := ""
-    
-    try {
-        Gui, Main:Default
-        Gui, ListView, MemoraVaultListView
-        
-        ColumnCount := LV_GetCount("Column")
-        if (ColumnCount < 2) {
-            SetTimer, RetryLoadData, -100
-            Return
-        }
-        
-        GuiControlGet, FilterSource
-        if (!FilterSource) {
-            Return
-        }
-        
-        QueryTable := (FilterSource = "全部数据") ? "ALL_DATA_VIEW" : FilterSource
-        IsAllData := (QueryTable = "ALL_DATA_VIEW")
-        
-        ; 惰性初始化缓存
-        if (CachedFieldsStr = "" || CachedTableName != QueryTable) {
-            if (!RefreshViewFieldsCache(QueryTable, false)) {
-                MsgBox, 16, 错误, 错误 ID：9952809 ; 字段缓存初始化失败！`n表名：%QueryTable%
-                Return
-            }
-        }
-        
-        ; 验证缓存是否有效
-        if (!CachedFieldToIndex || CachedFieldToIndex.Count() = 0) {
-            MsgBox, 16, 错误, 错误 ID：5320598 ; 字段索引缓存无效！`n请尝试重启程序。
-            Return
-        }
-        
-        FieldToIndex := CachedFieldToIndex
-        
-        ; 构建 WHERE 子句
-        WhereClause := BuildWhereClause(QueryTable, IsAllData, CachedViewFields)
-        
-        ; 查询缓存检查
-        NeedRefresh := (LastQueryTable != QueryTable || LastWhereClause != WhereClause)
-        
-        if (NeedRefresh) {
-            CountSQL := "SELECT COUNT(*) FROM " . QueryTable . WhereClause
-            CountResult := {}
-            if (!SQLiteDB.GetTable(CountSQL, CountResult)) {
-                ErrCode := SQLiteDB._ErrCode()
-                ErrMsg := SQLiteDB._ErrMsg()
-                MsgBox, 16, 错误, 计数查询失败：%ErrMsg%`n代码：%ErrCode%`nSQL：%CountSQL%
-                Return
-            }
-            
-            ErrCode := SQLiteDB._ErrCode()
-            ErrMsg := SQLiteDB._ErrMsg()
-            if (ErrCode != 0 && ErrMsg != "not an error") {
-                MsgBox, 16, 错误, 计数查询后错误：%ErrMsg%`n代码：%ErrCode%
-                Return
-            }
-            
-            if (!CountResult.RowCount || CountResult.RowCount < 1) {
-                TotalRows := 0
-            } else {
-                TotalRows := CountResult.Rows[1][1] + 0
-            }
-            
-            LastQueryTable := QueryTable
-            LastWhereClause := WhereClause
-        }
-        
-        ; 计算分页
-        GuiControlGet, DataCount, , DataCountCombo
-        DataCount := (DataCount = "显示条数") ? 0 : (DataCount + 0)
-        
-        if (DataCount > 0) {
-            TotalPages := Ceil(TotalRows / DataCount)
-            if (TotalPages < 1)
-                TotalPages := 1
-            if (CurrentPage > TotalPages)
-                CurrentPage := TotalPages
-            if (CurrentPage < 1)
-                CurrentPage := 1
-        } else {
-            TotalPages := 1
-            CurrentPage := 1
-        }
-        
-        ; ORDER BY 子句
-        OrderByClause := " ORDER BY COALESCE([置顶], 0) DESC, COALESCE([排序], 0) DESC"
-        if (SortByAccess || FilterAccessTimeBox != "访问日期") {
-            OrderByClause .= ", [访问时间] DESC"
-        }
-        
-        ; 构建 SQL（使用缓存的字段列表）
-        if (IsAllData) {
-            DataSQL := "SELECT " . CachedFieldsStr . " FROM " . QueryTable . WhereClause . OrderByClause
-        } else {
-            ; 修改：不添加 '表名' AS 列，避免偏移。表名用 FilterSource 获取，不需显示
-            EscapedTable := StrReplace(QueryTable, "'", "''")
-            DataSQL := "SELECT " . CachedFieldsStr . " FROM [" . EscapedTable . "]" . WhereClause . OrderByClause
-        }
-        
-        Offset := (DataCount > 0) ? (CurrentPage - 1) * DataCount : 0
-        if (DataCount > 0) {
-            DataSQL .= " LIMIT " . DataCount . " OFFSET " . Offset
-        }
-        
-        Result := {}
-        if (!SQLiteDB.GetTable(DataSQL, Result)) {
-            ErrCode := SQLiteDB._ErrCode()
-            ErrMsg := SQLiteDB._ErrMsg()
-            MsgBox, 16, 错误, 错误ID: 3731292 ; 数据查询失败：%ErrMsg%`n代码：%ErrCode%`nSQL：%DataSQL%
-            GuiControl, +Redraw, MemoraVaultListView
-            Return
-        }
-        
-        ErrCode := SQLiteDB._ErrCode()
-        ErrMsg := SQLiteDB._ErrMsg()
-        if (ErrCode != 0 && ErrMsg != "not an error") {
-            MsgBox, 16, 错误, 数据查询后错误：%ErrMsg%`n代码：%ErrCode%
-            GuiControl, +Redraw, MemoraVaultListView
-            Return
-        }
-        
-        ; 批量获取星级
-        StarLevelMap := {}
-        StarLevelMap := BatchGetStarLevels(Result, FieldToIndex, IsAllData)
-        
-        ; 预先准备列索引
-        ColumnIndexes := PrepareColumnIndexes(FieldToIndex)
-        
-        ; 批量填充 ListView
-        GuiControl, -Redraw, MemoraVaultListView
-        LV_Delete()
-        
-        PopulateListView(Result, FieldToIndex, ColumnIndexes, StarLevelMap)
-        
-        GuiControl, +Redraw, MemoraVaultListView
-        
-        ; 更新状态栏
-        UpdateStatusBar(Result.RowCount, TotalRows, DataCount, CurrentPage, TotalPages)
-        
-        Return
-        
-    } catch e {
-        ErrMsg := e.Message
-        ErrLine := e.Line
-        ErrWhat := e.What
-        ErrExtra := e.Extra
-        
-        DetailMsg := "LoadData 失败详细信息：`n"
-        DetailMsg .= "错误消息：" . ErrMsg . "`n"
-        DetailMsg .= "错误行号：" . ErrLine . "`n"
-        DetailMsg .= "错误位置：" . ErrWhat . "`n"
-        DetailMsg .= "附加信息：" . ErrExtra . "`n"
-        DetailMsg .= "`n当前表：" . QueryTable . "`n"
-        DetailMsg .= "缓存状态：" . (CachedFieldsStr ? "有效" : "无效")
-        
-        MsgBox, 16, 错误, 3611079 %DetailMsg%
-        GuiControl, +Redraw, MemoraVaultListView
-    }
-}
-
-; ===== 辅助函数：构建 WHERE 子句 =====
-BuildWhereClause(QueryTable, IsAllData, AllFields) {
-    Global FilterGroupCombo, FilterType, FilterKeyword, FilterRating
-    Global FilterFavorite, FilterDisable, FilterPinned, FilterSearch
-    Global FilterDate, FilterAccessTimeBox, FilterIDNum, FilterProcessStatus
-    Global CustomStartDate, CustomEndDate, SQLiteDB
-    
-    Conditions := []
-    
-    GuiControlGet, FilterGroup, , FilterGroupCombo
-    if (FilterGroup != "分组" && FilterGroup != "") {
-        if (IsAllData) {
-            Conditions.Push("[分组] = '" . StrReplace(FilterGroup, "'", "''") . "'")
-        } else {
-            PropTable := StrReplace(QueryTable, "'", "''") . "_关联属性"
-            ; 修改：子查询 SELECT p.ID，避免 ID 歧义
-            Conditions.Push("ID IN (SELECT p.ID FROM [" . PropTable . "] p INNER JOIN 关联属性表 a ON p.属性ID = a.ID WHERE a.属性类型 = '分组' AND a.属性值 = '" . StrReplace(FilterGroup, "'", "''") . "')")
-        }
-    }
-    
-    GuiControlGet, FilterType
-    if (FilterType != "类型" && FilterType != "") {
-        if (IsAllData) {
-            Conditions.Push("[类型] LIKE '%" . StrReplace(FilterType, "'", "''") . "%'")
-        } else {
-            PropTable := StrReplace(QueryTable, "'", "''") . "_关联属性"
-            ; 修改：子查询 SELECT p.ID，避免 ID 歧义
-            Conditions.Push("ID IN (SELECT p.ID FROM [" . PropTable . "] p INNER JOIN 关联属性表 a ON p.属性ID = a.ID WHERE a.属性类型 = '类型' AND a.属性值 LIKE '%" . StrReplace(FilterType, "'", "''") . "%')")
-        }
-    }
-    
-    GuiControlGet, FilterKeyword
-    if (FilterKeyword != "标签" && FilterKeyword != "") {
-        if (IsAllData) {
-            Conditions.Push("[标签] LIKE '%" . StrReplace(FilterKeyword, "'", "''") . "%'")
-        } else {
-            PropTable := StrReplace(QueryTable, "'", "''") . "_关联属性"
-            ; 修改：子查询 SELECT p.ID，避免 ID 歧义
-            Conditions.Push("ID IN (SELECT p.ID FROM [" . PropTable . "] p INNER JOIN 关联属性表 a ON p.属性ID = a.ID WHERE a.属性类型 = '标签' AND a.属性值 LIKE '%" . StrReplace(FilterKeyword, "'", "''") . "%')")
-        }
-    }
-    
-    GuiControlGet, FilterRating
-    if (FilterRating != "星级" && FilterRating != "") {
-        RatingValue := StrLen(FilterRating)
-        if (IsAllData) {
-            TablesSQL := "SELECT 表名称 FROM 注册登记所有表名称 WHERE 创建状态 = 1 AND 显示表 = 1;"
-            TablesResult := {}
-            SQLiteDB.GetTable(TablesSQL, TablesResult)
-            
-            StarConditions := []
-            Loop, % TablesResult.RowCount {
-                TableName := TablesResult.Rows[A_Index][1]
-                PropTable := StrReplace(TableName, "'", "''") . "_关联属性"
-                ; 修改：子查询 SELECT p.ID，避免 ID 歧义
-                SubQuery := "SELECT p.ID FROM [" . PropTable . "] p INNER JOIN 关联属性表 a ON p.属性ID = a.ID WHERE a.属性类型 = '星级' AND a.属性值 = '" . RatingValue . "'"
-                StarConditions.Push("(表名 = '" . StrReplace(TableName, "'", "''") . "' AND ID IN (" . SubQuery . "))")
-            }
-            if (StarConditions.Length() > 0) {
-                Conditions.Push("(" . Join(StarConditions, " OR ") . ")")
-            }
-        } else {
-            PropTable := StrReplace(QueryTable, "'", "''") . "_关联属性"
-            ; 修改：子查询 SELECT p.ID，避免 ID 歧义
-            Conditions.Push("ID IN (SELECT p.ID FROM [" . PropTable . "] p INNER JOIN 关联属性表 a ON p.属性ID = a.ID WHERE a.属性类型 = '星级' AND a.属性值 = '" . RatingValue . "')")
-        }
-    }
-    
-    GuiControlGet, FilterSearch
-    if (FilterSearch != "" && FilterSearch != "搜索") {
-        SearchCond := "[备注] LIKE '%" . StrReplace(FilterSearch, "'", "''") . "%' OR [内容] LIKE '%" . StrReplace(FilterSearch, "'", "''") . "%'"
-        Conditions.Push("(" . SearchCond . ")")
-    }
-    
-    GuiControlGet, FilterFavorite
-    if (FilterFavorite = "已收藏") {
-        Conditions.Push("[收藏] = 1")
-    } else if (FilterFavorite = "未收藏") {
-        Conditions.Push("([收藏] IS NULL OR [收藏] = 0)")
-    }
-    
-    GuiControlGet, FilterDisable
-    if (FilterDisable = "已禁删") {
-        Conditions.Push("[禁删] = 1")
-    } else if (FilterDisable = "未禁删") {
-        Conditions.Push("([禁删] IS NULL OR [禁删] = 0)")
-    }
-    
-    GuiControlGet, FilterPinned
-    if (FilterPinned = "已置顶") {
-        Conditions.Push("[置顶] = 1")
-    } else if (FilterPinned = "未置顶") {
-        Conditions.Push("([置顶] IS NULL OR [置顶] = 0)")
-    }
-    
-    GuiControlGet, FilterProcessStatus
-    if (FilterProcessStatus != "待办事件" && FilterProcessStatus != "") {
-        ProcessValue := (FilterProcessStatus = "未处理") ? 0 : (FilterProcessStatus = "处理中") ? 1 : 2
-        Conditions.Push("[处理状态] = " . ProcessValue)
-    }
-    
-    GuiControlGet, FilterDate
-    if (FilterDate != "创建日期" && FilterDate != "") {
-        DateCondition := GetDateCondition(FilterDate, "创建时间")
-        if (DateCondition)
-            Conditions.Push(DateCondition)
-    }
-    
-    GuiControlGet, FilterAccessTimeBox
-    if (FilterAccessTimeBox != "访问日期" && FilterAccessTimeBox != "") {
-        AccessCondition := GetDateCondition(FilterAccessTimeBox, "访问时间")
-        if (AccessCondition)
-            Conditions.Push(AccessCondition)
-    }
-    
-    GuiControlGet, FilterIDNum
-    if (FilterIDNum != "") {
-        Conditions.Push("[ID] = " . FilterIDNum)
-    }
-    
-    Return (Conditions.Length() > 0) ? " WHERE " . Join(Conditions, " AND ") : ""
-}
-
-; ===== 辅助函数：获取日期条件 =====
-GetDateCondition(FilterValue, FieldName) {
-    Global CustomStartDate, CustomEndDate
-    
-    if (FilterValue = "今日")
-        Return "DATE([" . FieldName . "]) = DATE('now', 'localtime')"
-    else if (FilterValue = "昨日")
-        Return "DATE([" . FieldName . "]) = DATE('now', 'localtime', '-1 day')"
-    else if (FilterValue = "一周内")
-        Return "DATE([" . FieldName . "]) >= DATE('now', 'localtime', '-7 days')"
-    else if (FilterValue = "两周内")
-        Return "DATE([" . FieldName . "]) >= DATE('now', 'localtime', '-14 days')"
-    else if (FilterValue = "本月")
-        Return "strftime('%Y-%m', [" . FieldName . "]) = strftime('%Y-%m', 'now', 'localtime')"
-    else if (FilterValue = "上月")
-        Return "strftime('%Y-%m', [" . FieldName . "]) = strftime('%Y-%m', 'now', 'localtime', '-1 month')"
-    else if (FilterValue = "自定义" && CustomStartDate && CustomEndDate)
-        Return "DATE([" . FieldName . "]) BETWEEN '" . StrReplace(CustomStartDate, "'", "''") . "' AND '" . StrReplace(CustomEndDate, "'", "''") . "'"
-    
-    Return ""
-}
-
-; ===== 辅助函数：批量获取星级（使用 UNION ALL）=====
-BatchGetStarLevels(Result, FieldToIndex, IsAllData) {
-    Global SQLiteDB, FilterSource  ; 新增：引入 FilterSource 用于 fallback
-    
-    StarLevelMap := {}
-    TableNameIndex := FieldToIndex["表名"]
-    IDIndex := FieldToIndex["ID"]
-    
-    if (!IDIndex)  ; 简化：TableNameIndex 可空（fallback 处理），但 ID 必备
-        Return StarLevelMap
-    
-    TableIDMap := {}
-    Loop, % Result.RowCount {
-        ; 修改：非全部数据下，用 FilterSource 作为 TableName（常量）
-        TableName := IsAllData ? (TableNameIndex ? Result.Rows[A_Index][TableNameIndex] : FilterSource) : FilterSource
-        DataID := Result.Rows[A_Index][IDIndex]
-        if (TableName && DataID) {
-            if (!TableIDMap.HasKey(TableName))
-                TableIDMap[TableName] := []
-            TableIDMap[TableName].Push(DataID)
-        }
-    }
-    
-    UnionQueries := []
-    for TableName, IDList in TableIDMap {
-        PropTableName := StrReplace(TableName, "'", "''") . "_关联属性"
-        
-        IDListStr := ""
-        Loop, % IDList.Length() {
-            IDListStr .= (IDListStr ? "," : "") . IDList[A_Index]
-        }
-        
-        ; 修改：子查询 SELECT p.ID，避免 ID 歧义（与 BuildWhereClause 一致）
-        SubQuery := "SELECT '" . StrReplace(TableName, "'", "''") . "' AS TableName, p.ID, a.属性值 FROM [" . PropTableName . "] p INNER JOIN 关联属性表 a ON p.属性ID = a.ID WHERE a.属性类型 = '星级' AND p.ID IN (" . IDListStr . ")"
-        UnionQueries.Push(SubQuery)
-    }
-    
-    if (UnionQueries.Length() > 0) {
-        StarSQL := Join(UnionQueries, " UNION ALL ")
-        StarResult := {}
-        SQLiteDB.GetTable(StarSQL, StarResult)
-        
-        Loop, % StarResult.RowCount {
-            TableName := StarResult.Rows[A_Index][1]
-            DataID := StarResult.Rows[A_Index][2]
-            StarValue := StarResult.Rows[A_Index][3]
-            MapKey := TableName . "_" . DataID
-            StarLevelMap[MapKey] := StarValue
-        }
-    }
-    
-    Return StarLevelMap
-}
-
-; ===== 辅助函数：准备列索引 =====
-PrepareColumnIndexes(FieldToIndex) {
-    ColumnIndexes := {}
-    ColumnIndexes.PinnedIndex := FieldToIndex["置顶"]
-    ColumnIndexes.FavoriteIndex := FieldToIndex["收藏"]
-    ColumnIndexes.NoDeleteIndex := FieldToIndex["禁删"]
-    ColumnIndexes.IdentifierIndex := FieldToIndex["标识"]
-    ColumnIndexes.TableNameIndex := FieldToIndex["表名"]
-    ColumnIndexes.IDIndex := FieldToIndex["ID"]
-    Return ColumnIndexes
-}
-
-; ===== 辅助函数：填充 ListView =====
-PopulateListView(Result, FieldToIndex, ColumnIndexes, StarLevelMap) {
-    Global DisplayFields, FilterSource, SQLiteDB ; 新增：引入 FilterSource 和 SQLiteDB 用于 fallback 和查询
-   
-    AllRows := []
-    Loop, % Result.RowCount {
-        RowNumber := A_Index
-        Row := Result.Rows[RowNumber]
-       
-        StatusText := BuildStatusText(Row, ColumnIndexes, StarLevelMap)
-       
-        RowData := [RowNumber, StatusText]
-       
-        ; 新增：处理“表名”列（仅非全部数据时手动填充常量）
-        IsAllData := (FilterSource = "全部数据") ; 基于 FilterSource 判断
-        TableNameValue := ""
-        if (!IsAllData && ArrayContains(DisplayFields, "表名")) {
-            TableNameValue := FilterSource ; 当前表名常量
-        }
-       
-        ; 预计算当前行的表名和ID（用于标识查询）
-        CurrentTableName := IsAllData ? (ColumnIndexes.TableNameIndex ? Row[ColumnIndexes.TableNameIndex] : "") : FilterSource
-        CurrentDataID := ColumnIndexes.IDIndex ? Row[ColumnIndexes.IDIndex] : ""
-       
-        Loop, % DisplayFields.Length() {
-            FieldName := DisplayFields[A_Index]
-            if (FieldName = "表名") {
-                ; 特殊处理：用 TableNameValue（全部数据从 Row 取，非全部用常量）
-                if (IsAllData) {
-                    FieldIndex := FieldToIndex["表名"]
-                    FieldValue := FieldIndex ? Row[FieldIndex] : ""
-                } else {
-                    FieldValue := TableNameValue
-                }
-                RowData.Push(FieldValue ? FieldValue : "")
-                Continue ; 跳过标准索引取值
-            }
-           
-            FieldIndex := FieldToIndex[FieldName]
-            if (!FieldIndex) {
-                RowData.Push("")
-                Continue
-            }
-            FieldValue := Row[FieldIndex]
-           
-            ; 新增：处理“标识”字段逻辑（合并主表 + 关联属性）
-            if (FieldName = "标识") {
-                AllIdentifiers := FieldValue ? Trim(FieldValue) : ""  ; 主表值
-                
-                ; 从关联属性表查询"标识"类型的所有属性值
-                if (CurrentTableName && CurrentDataID) {
-                    PropTable := StrReplace(CurrentTableName, "'", "''") . "_关联属性"
-                   
-                    IdentifierSQL := "SELECT a.属性值 FROM [" . PropTable . "] p "
-                                  . "INNER JOIN 关联属性表 a ON p.属性ID = a.ID "
-                                  . "WHERE p.ID = " . CurrentDataID . " AND a.属性类型 = '标识';"
-                   
-                    IdentifierResult := {}
-                    if (SQLiteDB.GetTable(IdentifierSQL, IdentifierResult) && IdentifierResult.RowCount > 0) {
-                        Loop, % IdentifierResult.RowCount {
-                            PropIdentifier := Trim(IdentifierResult.Rows[A_Index][1])
-                            if (PropIdentifier != "" && !InStr(AllIdentifiers, PropIdentifier)) {
-                                AllIdentifiers .= PropIdentifier
-                            }
-                        }
-                    }
-                }
-                FieldValue := AllIdentifiers ? AllIdentifiers : ""
-            ; 🔥 新增：处理“分组”字段逻辑（合并主表 + 关联属性，逗号连接）
-            } else if (FieldName = "分组") {
-                AllGroups := FieldValue ? Trim(FieldValue) : ""  ; 主表 fallback（如果有）
-                
-                ; 从关联属性表查询"分组"类型的所有属性值
-                if (CurrentTableName && CurrentDataID) {
-                    PropTable := StrReplace(CurrentTableName, "'", "''") . "_关联属性"
-                   
-                    GroupSQL := "SELECT a.属性值 FROM [" . PropTable . "] p "
-                              . "INNER JOIN 关联属性表 a ON p.属性ID = a.ID "
-                              . "WHERE p.ID = " . CurrentDataID . " AND a.属性类型 = '分组' "
-                              . "ORDER BY a.Local_ID DESC;"  ; 按顺序排序，避免乱序
-                   
-                    GroupResult := {}
-                    if (SQLiteDB.GetTable(GroupSQL, GroupResult) && GroupResult.RowCount > 0) {
-                        GroupList := []  ; 用数组收集，避免重复
-                        Loop, % GroupResult.RowCount {
-                            PropGroup := Trim(GroupResult.Rows[A_Index][1])
-                            if (PropGroup != "" && !ArrayContains(GroupList, PropGroup)) {
-                                GroupList.Push(PropGroup)
-                            }
-                        }
-                        ; 逗号连接
-                        AllGroups := GroupList.Length() > 0 ? Join(GroupList, ", ") : AllGroups
-                    }
-                }
-                FieldValue := AllGroups ? AllGroups : ""
-            ; 新增：处理“提示”字段逻辑
-            } else if (FieldName = "提示") {
-                ProcessValue := (FieldValue + 0) ; 转为数字，确保兼容字符串"1"
-                FieldValue := (ProcessValue = 1) ? "✓" : ""
-            } else if (FieldName = "星级") {
-                ; 修改：星级 TableName fallback 为 FilterSource（非全部数据）
-                CurrentTableNameForStar := IsAllData ? (ColumnIndexes.TableNameIndex ? Row[ColumnIndexes.TableNameIndex] : "") : FilterSource
-                CurrentDataIDForStar := ColumnIndexes.IDIndex ? Row[ColumnIndexes.IDIndex] : ""
-                MapKey := CurrentTableNameForStar . "_" . CurrentDataIDForStar
-                StarCount := StarLevelMap.HasKey(MapKey) ? StarLevelMap[MapKey] : 0
-                FieldValue := StarCount > 0 ? StrRepeat("★", StarCount) : ""
-            } else if (FieldName = "处理状态") {
-                ProcessValue := (FieldValue + 0)
-                FieldValue := (ProcessValue = 0) ? "未处理" : (ProcessValue = 1) ? "处理中" : (ProcessValue = 2) ? "已完成" : ""
-            }
-            RowData.Push(FieldValue ? FieldValue : "")
-        }
-        AllRows.Push(RowData)
-    }
-   
-    GuiControl, -Redraw, MemoraVaultListView
-    LV_Delete()
-    Loop, % AllRows.Length() {
-        LV_Add("", AllRows[A_Index]*)
-    }
-    GuiControl, +Redraw, MemoraVaultListView
-}
-
-; 新辅助：构建状态文本（预计算）
-BuildStatusText(Row, ColumnIndexes, StarLevelMap) {
-    Global FilterSource, SQLiteDB, FieldToIndex
-   
-    StatusText := ""
-   
-    ; 固定状态图标
-    if (ColumnIndexes.PinnedIndex && Row[ColumnIndexes.PinnedIndex] = 1)
-        StatusText .= "📌"
-   
-    if (ColumnIndexes.FavoriteIndex && Row[ColumnIndexes.FavoriteIndex] = 1)
-        StatusText .= "🔖"
-   
-    if (ColumnIndexes.NoDeleteIndex && Row[ColumnIndexes.NoDeleteIndex] = 1)
-        StatusText .= "🔒"
-   
-    ; 星级显示逻辑（数字 + 一个 ★）
-    StarCount := 0
-    if (StarLevelMap) {
-        IsAllData := (FilterSource = "全部数据")
-        CurrentTableName := IsAllData ? (ColumnIndexes.TableNameIndex ? Row[ColumnIndexes.TableNameIndex] : "") : FilterSource
-        CurrentDataID := ColumnIndexes.IDIndex ? Row[ColumnIndexes.IDIndex] : ""
-        MapKey := CurrentTableName . "_" . CurrentDataID
-        StarCount := StarLevelMap.HasKey(MapKey) ? StarLevelMap[MapKey] : 0
-    }
-    if (StarCount > 0) {
-        StatusText .= StarCount . "★"
-    }
-   
-    ; 获取当前记录的表名和ID（后续查询需要）
-    IsAllData := (FilterSource = "全部数据")
-    CurrentTableName := IsAllData ? (ColumnIndexes.TableNameIndex ? Row[ColumnIndexes.TableNameIndex] : "") : FilterSource
-    CurrentDataID := ColumnIndexes.IDIndex ? Row[ColumnIndexes.IDIndex] : ""
-   
-    ; ========================================
-    ; 标识字段处理（组合主表和关联属性表）
-    ; ========================================
-   
-    AllIdentifiers := ""
-   
-    ; 1. 从主表的"标识"字段取值
-    if (ColumnIndexes.IdentifierIndex && Row[ColumnIndexes.IdentifierIndex]) {
-        MainTableIdentifier := Trim(Row[ColumnIndexes.IdentifierIndex])
-        if (MainTableIdentifier != "") {
-            AllIdentifiers .= MainTableIdentifier
-        }
-    }
-   
-    ; 2. 从关联属性表查询"标识"类型的所有属性值
-    if (CurrentTableName && CurrentDataID) {
-        PropTable := StrReplace(CurrentTableName, "'", "''") . "_关联属性"
-       
-        ; 查询所有"标识"类型的属性值（可能有多个）
-        IdentifierSQL := "SELECT a.属性值 FROM [" . PropTable . "] p "
-                      . "INNER JOIN 关联属性表 a ON p.属性ID = a.ID "
-                      . "WHERE p.ID = " . CurrentDataID . " AND a.属性类型 = '标识';"
-       
-        IdentifierResult := {}
-        if (SQLiteDB.GetTable(IdentifierSQL, IdentifierResult) && IdentifierResult.RowCount > 0) {
-            Loop, % IdentifierResult.RowCount {
-                PropIdentifier := Trim(IdentifierResult.Rows[A_Index][1])
-                if (PropIdentifier != "" && !InStr(AllIdentifiers, PropIdentifier)) {
-                    AllIdentifiers .= PropIdentifier
-                }
-            }
-        }
-    }
-   
-    ; 添加所有标识到状态文本
-    if (AllIdentifiers != "") {
-        StatusText .= AllIdentifiers
-    }
-   
-    ; ========================================
-    ; 标签字段处理（查找特定标签如"⏰"）
-    ; ========================================
-   
-    ; 3. 检查标签字段（主表或关联属性表）
-    TagsToShow := [] ; 需要显示的特殊标签
-   
-    ; 先从主表的"标签"字段查找
-    TagIndex := FieldToIndex ? FieldToIndex["标签"] : 0
-    if (TagIndex && Row[TagIndex]) {
-        TagValue := Row[TagIndex]
-        ; 检查特定标签
-        if (InStr(TagValue, "⏰"))
-            TagsToShow.Push("⏰")
-        ; 可以添加更多特殊标签检查
-        ; if (InStr(TagValue, "重要"))
-        ; TagsToShow.Push("⚠️")
-    }
-   
-    ; 添加特殊标签到状态文本（去重）
-    AddedTags := {}
-    Loop, % TagsToShow.Length() {
-        Tag := TagsToShow[A_Index]
-        if (!AddedTags.HasKey(Tag)) {
-            StatusText .= Tag
-            AddedTags[Tag] := true
-        }
-    }
-   
-    return StatusText
-}
-
-; 自定义：重复字符串（AHK无内置，高效）
-StrRepeat(Str, Count) {
-    Result := ""
-    Loop, %Count%
-        Result .= Str
-    return Result
-}
-
-; ===== 辅助函数：更新状态栏 =====
-UpdateStatusBar(DisplayCount, TotalCount, DataCount, CurrentPage, TotalPages) {
-    Global ManageMode, SortByAccess, FilterSource
-    
-    DataSummary := (DisplayCount = 0) ? "无数据" : "显示 " . DisplayCount . "/" . TotalCount . " 条"
-    
-    if (FilterSource = "全部数据") {
-        DataSummary .= " | 全部"
-    } else if (FilterSource) {
-        TableName := SubStr(FilterSource, 1, 6)
-        if (StrLen(FilterSource) > 6)
-            TableName .= "..."
-        DataSummary .= " | " . TableName
-    }
-    
-    if (DataCount > 0 && TotalPages > 1) {
-        PageInfo := "第 " . CurrentPage . "/" . TotalPages . " 页"
-    } else {
-        PageInfo := "共 " . TotalCount . " 条"
-    }
-    
-    ModeText := ManageMode ? "管理" : "浏览"
-    SortText := SortByAccess ? "访问↓" : "默认"
-    
-    if (ManageMode) {
-        SelectedCount := LV_GetCount("Selected")
-        if (SelectedCount > 0)
-            ModeText .= " | 已选 " . SelectedCount
-    }
-    
-    ModeInfo := ModeText . " | " . SortText
-    
-    FilterSummary := BuildFilterSummary()
-    
-    MergedText := "⚑1 " . DataSummary . "     ⚑2 " . FilterSummary . "     ⚑3 " . PageInfo . "     ⚑4 " . ModeInfo
-    
-    SB_SetParts(3000)
-    SB_SetText(MergedText, 1)
-}
-
-; ===== 辅助函数：构建筛选摘要 =====
-BuildFilterSummary() {
-    Global FilterRating, FilterKeyword, FilterSearch, FilterDate
-    Global FilterFavorite, FilterPinned, FilterDisable
-    Global FilterGroupCombo, FilterType, FilterAccessTimeBox
-    Global FilterIDNum, FilterProcessStatus
-    
-    Parts := []
-    
-    GuiControlGet, FilterRating
-    if (FilterRating != "星级" && FilterRating != "")
-        Parts.Push("星级：" . StrReplace(FilterRating, "★", "★"))
-    
-    GuiControlGet, FilterKeyword
-    if (FilterKeyword != "标签" && FilterKeyword != "")
-        Parts.Push("标签：" . FilterKeyword)
-    
-    GuiControlGet, FilterSearch
-    if (FilterSearch != "" && FilterSearch != "搜索")
-        Parts.Push("搜：" . FilterSearch)
-    
-    GuiControlGet, FilterDate
-    if (FilterDate != "创建日期" && FilterDate != "")
-        Parts.Push("日期：" . FilterDate)
-    
-    GuiControlGet, FilterIDNum
-    if (FilterIDNum != "")
-        Parts.Push("ID：" . FilterIDNum)
-    
-    Summary := ""
-    Loop, % Parts.Length() {
-        Summary .= (A_Index > 1 ? " | " : "") . Parts[A_Index]
-    }
-    
-    Return Summary ? Summary : "-"
 }
