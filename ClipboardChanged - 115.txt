@@ -1294,3 +1294,267 @@ WriteData1016() {
     
     ; AddDebugLog("[WriteData1016] 结束")
 }
+
+;===================|===================
+
+InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
+    Global SQLiteDB, DBPath
+    Result := {}
+    Result.Success := 0
+    Result.ErrorMsg := ""
+    Result.AttrID := ""
+
+    ; AddDebugLog("InsertAttribute 开始, TableName=" . TableName . ", DataID=" . DataID . ", AttrFormat=" . AttrFormat . ", AttrValue=" . AttrValue . ", DataFormat=" . DataFormat)
+
+    if (!SQLiteDB) {
+        Result.ErrorMsg := "ERROR_202547: SQLiteDB 未初始化"
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+
+    if (!CheckDBUnlocked(DBPath)) {
+        Result.ErrorMsg := "4351898: 数据库被锁定"
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+
+    ; 验证表名合法性（防止SQL注入）
+    if (TableName = "" || RegExMatch(TableName, "[;'\[\]]")) {
+        Result.ErrorMsg := "ERROR_202552: 表名非法: " . TableName
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+
+    ; 验证主表是否存在（注册登记主表）
+    EscapedTableName := StrReplace(TableName, "'", "''")
+    CheckMainTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . EscapedTableName . "';"
+    MainTableResult := {}
+    if (!SQLiteDB.GetTable(CheckMainTableSQL, MainTableResult) || MainTableResult.RowCount = 0) {
+        Result.ErrorMsg := "ERROR_202553: 主表 " . TableName . " 不存在"
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+
+    ; 验证ID是否存在于主表中
+    CheckDataIDSQL := "SELECT ID FROM [" . EscapedTableName . "] WHERE ID = " . DataID . " LIMIT 1;"
+    DataIDResult := {}
+    if (!SQLiteDB.GetTable(CheckDataIDSQL, DataIDResult) || DataIDResult.RowCount = 0) {
+        Result.ErrorMsg := "ERROR_6247458: ID " . DataID . " 在表 " . TableName . " 中不存在"
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+
+    PropTableName := TableName . "_关联属性"
+
+    ; 检查关联属性表是否存在
+    CheckPropTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . PropTableName . "';"
+    PropTableResult := {}
+    if (!SQLiteDB.GetTable(CheckPropTableSQL, PropTableResult) || PropTableResult.RowCount = 0) {
+        Result.ErrorMsg := "ERROR_5354041: 属性关联表 " . PropTableName . " 不存在"
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+    ; AddDebugLog("属性关联表检查通过: " . PropTableName)
+
+    AttrFormat := Trim(AttrFormat)
+    AttrValue := Trim(AttrValue)
+
+    if (AttrFormat = "" || AttrValue = "") {
+        Result.Success := 1
+        Result.ErrorMsg := "属性格式或值为空，跳过"
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+
+    if (StrLen(AttrValue) > 1000) {
+        AttrValue := SubStr(AttrValue, 1, 1000)
+    }
+
+    if (AttrFormat = "星级" && AttrValue = "0") {
+        Result.Success := 1
+        Result.ErrorMsg := "星级为 0，跳过插入"
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+
+    EscapedAttrFormat := StrReplace(AttrFormat, "'", "''")
+    EscapedAttrValue := StrReplace(AttrValue, "'", "''")
+    EscapedDataFormat := StrReplace(DataFormat, "'", "''")
+    
+    ; 检查属性是否已存在（在全局关联属性表中）
+    GetAttrIDSQL := "SELECT Local_ID, ID FROM 关联属性表 WHERE 属性类型 = '" . EscapedAttrFormat . "' AND 属性值 = '" . EscapedAttrValue . "' LIMIT 1;"
+    AttrResult := {}
+    AttrID := ""
+    
+    SQLiteDB.Exec("PRAGMA busy_timeout = 5000;")
+
+    if (SQLiteDB.GetTable(GetAttrIDSQL, AttrResult) && AttrResult.RowCount > 0) {
+        AttrID := AttrResult.Rows[1][2]  ; 获取 ID 字段（TEXT）
+        ; AddDebugLog("找到现有属性 ID: " . AttrID)
+    } else {
+        ; AddDebugLog("未找到现有属性, 准备插入新属性")
+        ; 插入时包含格式字段
+        if (DataFormat != "") {
+            InsertAttrSQL := "INSERT OR IGNORE INTO 关联属性表 (属性类型, 属性值, 类型) VALUES ('" . EscapedAttrFormat . "', '" . EscapedAttrValue . "', '" . EscapedDataFormat . "');"
+        } else {
+            InsertAttrSQL := "INSERT OR IGNORE INTO 关联属性表 (属性类型, 属性值) VALUES ('" . EscapedAttrFormat . "', '" . EscapedAttrValue . "');"
+        }
+        
+        RetryCount := 5
+        Success := false
+        while (RetryCount > 0) {
+            if (SQLiteDB.Exec(InsertAttrSQL)) {
+                Success := true
+                ; AddDebugLog("插入关联属性表成功")
+                break
+            }
+            ErrorMsg := SQLiteDB._ErrMsg()
+            ; AddDebugLog("插入关联属性表失败 (重试 " . (6-RetryCount) . "): " . ErrorMsg)
+            if (InStr(ErrorMsg, "SQLITE_BUSY")) {
+                Sleep, 200
+                RetryCount--
+                continue
+            }
+            Result.ErrorMsg := "ERROR_202548: 插入关联属性表失败: " . ErrorMsg
+            Return Result
+        }
+        
+        if (!Success) {
+            Result.ErrorMsg := "ERROR_202548: 插入关联属性表失败，超过重试次数"
+            ; AddDebugLog(Result.ErrorMsg)
+            Return Result
+        }
+        
+        ; 获取新插入的 Local_ID 和 ID
+        GetAttrIDSQL := "SELECT Local_ID, ID FROM 关联属性表 WHERE 属性类型 = '" . EscapedAttrFormat . "' AND 属性值 = '" . EscapedAttrValue . "' LIMIT 1;"
+        RetryCount := 5
+        while (RetryCount > 0) {
+            if (SQLiteDB.GetTable(GetAttrIDSQL, AttrResult) && AttrResult.RowCount > 0) {
+                AttrID := AttrResult.Rows[1][2]  ; 获取 ID 字段
+                if (AttrID = "") {
+                    AttrID := AttrResult.Rows[1][1]  ; 如果 ID 为空， fallback 到 Local_ID
+                    ; 更新 ID 字段为 Local_ID 的文本形式
+                    UpdateIDSQL := "UPDATE 关联属性表 SET ID = '" . AttrID . "' WHERE Local_ID = " . AttrResult.Rows[1][1] . ";"
+                    if (!SQLiteDB.Exec(UpdateIDSQL)) {
+                        ErrorMsg := SQLiteDB._ErrMsg()
+                        Result.ErrorMsg := "ERROR_202549: 更新属性 ID 失败: " . ErrorMsg
+                        ; AddDebugLog(Result.ErrorMsg)
+                        Return Result
+                    }
+                    ; AddDebugLog("更新属性 ID 成功: " . AttrID)
+                }
+                ; AddDebugLog("获取新属性 ID: " . AttrID)
+                break
+            }
+            Sleep, 100
+            RetryCount--
+        }
+        
+        if (AttrID = "") {
+            Result.ErrorMsg := "ERROR_202549: 插入后未找到属性 ID，属性类型='" . AttrFormat . "', 属性值='" . AttrValue . "'"
+            ; AddDebugLog(Result.ErrorMsg)
+            Return Result
+        }
+    }
+
+    if (AttrID = "") {
+        Result.ErrorMsg := "ERROR_202549: 无效的属性 ID"
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+
+    ; 检查属性关联是否已存在（动态PropTableName）
+    EscapedPropTable := StrReplace(PropTableName, "'", "''")
+    CheckExistSQL := "SELECT COUNT(*) FROM [" . EscapedPropTable . "] WHERE 属性ID = '" . StrReplace(AttrID, "'", "''") . "' AND ID = " . DataID . ";"
+    CheckResult := {}
+    ExistingCount := 0
+    
+    if (SQLiteDB.GetTable(CheckExistSQL, CheckResult) && CheckResult.RowCount > 0) {
+        ExistingCount := CheckResult.Rows[1][1]
+        if (ExistingCount > 0) {
+            Result.Success := 1
+            Result.ErrorMsg := "属性关联已存在"
+            Result.AttrID := AttrID
+            ; AddDebugLog("属性关联已存在")
+            Return Result
+        }
+    } else {
+        ErrorMsg := SQLiteDB._ErrMsg()
+        Result.ErrorMsg := "ERROR_3744312: 检查属性关联失败: " . ErrorMsg
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+    ; AddDebugLog("属性关联不存在, 准备插入")
+
+    ; 插入属性关联时也包含格式字段
+    if (DataFormat != "") {
+        InsertAssocSQL := "INSERT INTO [" . EscapedPropTable . "] (属性ID, ID, 格式) VALUES ('" . StrReplace(AttrID, "'", "''") . "', " . DataID . ", '" . EscapedDataFormat . "');"
+    } else {
+        InsertAssocSQL := "INSERT INTO [" . EscapedPropTable . "] (属性ID, ID) VALUES ('" . StrReplace(AttrID, "'", "''") . "', " . DataID . ");"
+    }
+    
+    RetryCount := 5
+    Success := false
+    while (RetryCount > 0) {
+        if (SQLiteDB.Exec(InsertAssocSQL)) {
+            Success := true
+            ; AddDebugLog("插入属性关联成功")
+            break
+        }
+        ErrorMsg := SQLiteDB._ErrMsg()
+        ; AddDebugLog("插入属性关联失败 (重试 " . (6-RetryCount) . "): " . ErrorMsg)
+        if (InStr(ErrorMsg, "SQLITE_BUSY")) {
+            Sleep, 200
+            RetryCount--
+            continue
+        }
+        Result.ErrorMsg := "2716957: 插入属性关联失败: " . ErrorMsg
+        Return Result
+    }
+    
+    if (!Success) {
+        Result.ErrorMsg := "2720504: 插入属性关联失败，超过重试次数"
+        ; AddDebugLog(Result.ErrorMsg)
+        Return Result
+    }
+
+    Result.Success := 1
+    Result.ErrorMsg := ""
+    Result.AttrID := AttrID
+    ; AddDebugLog("InsertAttribute 完成成功, TableName=" . TableName . ", AttrID=" . AttrID)
+    Return Result
+}
+
+VerifyAllAttributes(DataID, TableName) {
+    Global SQLiteDB
+    
+    AttrCount := 0
+    
+    ; 检查主表是否存在
+    EscapedTableName := StrReplace(TableName, "'", "''")
+    CheckMainTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . EscapedTableName . "';"
+    MainTableResult := {}
+    if (!SQLiteDB.GetTable(CheckMainTableSQL, MainTableResult) || MainTableResult.RowCount = 0) {
+        MsgBox, 16, 错误, VerifyAllAttributes: 主表 " . TableName . " 不存在
+        Return -1
+    }
+    
+    ; 检查 DataID 是否存在
+    CheckDataIDSQL := "SELECT ID FROM [" . EscapedTableName . "] WHERE ID = " . DataID . " LIMIT 1;"
+    DataIDResult := {}
+    if (!SQLiteDB.GetTable(CheckDataIDSQL, DataIDResult) || DataIDResult.RowCount = 0) {
+        MsgBox, 16, 错误, VerifyAllAttributes: ID " . DataID . " 在表 " . TableName . " 中不存在
+        Return -1
+    }
+    
+    ; 检查属性关联表是否存在
+    PropTableName := TableName . "_关联属性"
+    CheckPropTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . PropTableName . "';"
+    PropTableResult := {}
+    if (!SQLiteDB.GetTable(CheckPropTableSQL, PropTableResult) || PropTableResult.RowCount = 0) {
+        MsgBox, 16, 错误, VerifyAllAttributes: 属性关联表 " . PropTableName . " 不存在
+        Return -1
+    }
+    
+    Return AttrCount
+}
