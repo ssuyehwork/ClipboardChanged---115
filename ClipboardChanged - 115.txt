@@ -3,7 +3,7 @@ WriteData1014() {
     ; AddDebugLog("[WriteData1014] 开始")
     ClipboardLock := 1
     ProcessingContext := "WriteData1014"
-    
+
     WinGetTitle, WindowTitle, A
     if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
         AppName := Trim(Match2)
@@ -198,7 +198,7 @@ WriteData1014() {
             RetryCount := 3
             LocalG_last_insert_rowid := ""
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 标识 = '" . EscapedIdentifier . "', 类型 = '" . EscapedFormat . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(UpdateSQL)) {
                         Success := true
@@ -261,7 +261,7 @@ WriteData1014() {
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
                 RetryCount := 3
                 Success := false
                 while (RetryCount > 0) {
@@ -344,6 +344,9 @@ WriteData1014() {
             }
             if (Identifier != "") {
                 Attributes.Push({Format: "标识", Value: Identifier})
+            }
+            if (Format != "") {
+                Attributes.Push({Format: "类型", Value: Format})
             }
 
             LocalAttrErrors := 0
@@ -435,7 +438,7 @@ WriteData1014() {
         SaveDataTip()
         SetTimer, WatchDatabaseDir, 3000
     }
-    
+
     ; AddDebugLog("[WriteData1014] 结束")
 }
 
@@ -445,7 +448,7 @@ WriteData1015() {
     Global SQLiteDB, DBPath, ClipboardLock, ProcessingContext, g_CurrentRecord, ContentCache, G_last_insert_rowid
     ClipboardLock := 1
     ProcessingContext := "WriteData1015"
-    
+
     WinGetTitle, WindowTitle, A
     if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
         AppName := Trim(Match2)
@@ -632,7 +635,7 @@ WriteData1015() {
             RetryCount := 3
             LocalG_last_insert_rowid := ""
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 标识 = '" . EscapedIdentifier . "', 类型 = '" . EscapedFormat . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(UpdateSQL)) {
                         Success := true
@@ -695,7 +698,7 @@ WriteData1015() {
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
                 RetryCount := 3
                 Success := false
                 while (RetryCount > 0) {
@@ -778,6 +781,9 @@ WriteData1015() {
             if (Identifier != "") {
                 Attributes.Push({Format: "标识", Value: Identifier})
             }
+            if (Format != "") {
+                Attributes.Push({Format: "类型", Value: Format})
+            }
 
             LocalAttrErrors := 0
             for idx, attr in Attributes {
@@ -856,7 +862,7 @@ WriteData1016() {
     ; AddDebugLog("[WriteData1016] 开始")
     ClipboardLock := 1
     ProcessingContext := "WriteData1016"
-    
+
     WinGetTitle, WindowTitle, A
     if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
         AppName := Trim(Match2)
@@ -946,7 +952,7 @@ WriteData1016() {
             line1 := ContentCache[i]
             line2 := ContentCache[i+1]
             ClipData := line1 . line2
-            
+
             ; 清理内容
             ClipData := RegExReplace(ClipData, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "")
             ClipData := Trim(ClipData)
@@ -1054,7 +1060,7 @@ WriteData1016() {
             RetryCount := 3
             LocalG_last_insert_rowid := ""
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 标识 = '" . EscapedIdentifier . "', 类型 = '" . EscapedFormat . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(UpdateSQL)) {
                         Success := true
@@ -1117,7 +1123,7 @@ WriteData1016() {
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
                 RetryCount := 3
                 Success := false
                 while (RetryCount > 0) {
@@ -1200,6 +1206,9 @@ WriteData1016() {
             }
             if (Identifier != "") {
                 Attributes.Push({Format: "标识", Value: Identifier})
+            }
+            if (Format != "") {
+                Attributes.Push({Format: "类型", Value: Format})
             }
 
             LocalAttrErrors := 0
@@ -1291,6 +1300,6 @@ WriteData1016() {
         SaveDataTip()
         SetTimer, WatchDatabaseDir, 3000
     }
-    
+
     ; AddDebugLog("[WriteData1016] 结束")
 }
