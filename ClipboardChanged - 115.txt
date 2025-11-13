@@ -818,24 +818,26 @@ ClipboardChanged(type) {
             IsFolderPath := (RegExMatch(AppName, "^[A-Za-z]:\\.*$") && InStr(FileExist(AppName), "D"))
             if (!IsFolderPath) {
                 Tags := []
-                if (RegExMatch(AppName, "^(.+)\s*-\s*(.+)$", Match)) {
+                if (RegExMatch(WindowTitle, "^(.+)\s*-\s*(.+)$", Match)) {
                     FirstPart := Trim(Match1)
-                    SecondPart := Trim(Match2)
                     if (!RegExMatch(FirstPart, "\.[a-zA-Z0-9]{1,4}$")) {
                         Tags.Push(FirstPart)
                     }
-                    if (SecondPart = "Google Chrome") {
-                        Tags.Push("Chrome")
-                    } else {
-                        Tags.Push(SecondPart)
+                }
+
+                if (AppName = "Google Chrome") {
+                    AlreadyExists := false
+                    for index, Tag in Tags {
+                        if (Tag = "Chrome") {
+                            AlreadyExists := true
+                            break
+                        }
                     }
-                } else {
-                    if (AppName = "Google Chrome") {
+                    if (!AlreadyExists) {
                         Tags.Push("Chrome")
-                    } else {
-                        Tags.Push(AppName)
                     }
                 }
+
                 for index, Tag in Tags {
                     if (Tag != "" && Tag != "未知应用") {
                         ; 🔥 改回 "标签" 进行测试
