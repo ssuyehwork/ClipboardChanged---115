@@ -351,15 +351,17 @@ WriteData1014() {
 
             LocalAttrErrors := 0
             for idx, attr in Attributes {
-                AddDebugLog("[WriteData1014] 尝试插入属性: Format=" . attr.Format . ", Value=" . attr.Value . ", ID=" . FinalID)
-                Result := InsertAttribute("数据收集", FinalID, attr.Format, attr.Value)  ; 添加 TableName 参数
-                ErrorMsg := Result.ErrorMsg
-                AddDebugLog("[WriteData1014] 插入结果: Success=" . Result.Success . ", ErrorMsg=" . ErrorMsg)
-                if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
-                    LocalAttrErrors++
-                    continue  ; 单个属性失败不中断整体
+                if (attr.Value = "" || (attr.Format = "星级" && attr.Value = "0")) {
+                    continue
                 }
-                ; 移除手动关联插入，因为 InsertAttribute 已处理
+                EscapedFormat := StrReplace(attr.Format, "'", "''")
+                EscapedValue := StrReplace(attr.Value, "'", "''")
+                InsertAttributeSQL := "INSERT INTO 数据收集_关联属性 (lParentID, Format, Value) VALUES (" . FinalID . ", '" . EscapedFormat . "', '" . EscapedValue . "');"
+                AddDebugLog("[WriteData1014] 尝试直接插入属性: " . InsertAttributeSQL)
+                if (!SQLiteDB.Exec(InsertAttributeSQL)) {
+                    LocalAttrErrors++
+                    AddDebugLog("[WriteData1014] 直接插入属性失败: " . SQLiteDB._ErrMsg())
+                }
             }
             if (LocalAttrErrors > 0) {
                 AddDebugLog("[WriteData1014] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
@@ -789,13 +791,16 @@ WriteData1015() {
 
             LocalAttrErrors := 0
             for idx, attr in Attributes {
-                AddDebugLog("[WriteData1015] 尝试插入属性: Format=" . attr.Format . ", Value=" . attr.Value . ", ID=" . FinalID)
-                Result := InsertAttribute("数据收集", FinalID, attr.Format, attr.Value)
-                ErrorMsg := Result.ErrorMsg
-                AddDebugLog("[WriteData1015] 插入结果: Success=" . Result.Success . ", ErrorMsg=" . ErrorMsg)
-                if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
-                    LocalAttrErrors++
+                if (attr.Value = "" || (attr.Format = "星级" && attr.Value = "0")) {
                     continue
+                }
+                EscapedFormat := StrReplace(attr.Format, "'", "''")
+                EscapedValue := StrReplace(attr.Value, "'", "''")
+                InsertAttributeSQL := "INSERT INTO 数据收集_关联属性 (lParentID, Format, Value) VALUES (" . FinalID . ", '" . EscapedFormat . "', '" . EscapedValue . "');"
+                AddDebugLog("[WriteData1015] 尝试直接插入属性: " . InsertAttributeSQL)
+                if (!SQLiteDB.Exec(InsertAttributeSQL)) {
+                    LocalAttrErrors++
+                    AddDebugLog("[WriteData1015] 直接插入属性失败: " . SQLiteDB._ErrMsg())
                 }
             }
 
@@ -1217,15 +1222,17 @@ WriteData1016() {
 
             LocalAttrErrors := 0
             for idx, attr in Attributes {
-                AddDebugLog("[WriteData1016] 尝试插入属性: Format=" . attr.Format . ", Value=" . attr.Value . ", ID=" . FinalID)
-                Result := InsertAttribute("数据收集", FinalID, attr.Format, attr.Value)  ; 添加 TableName 参数
-                ErrorMsg := Result.ErrorMsg
-                AddDebugLog("[WriteData1016] 插入结果: Success=" . Result.Success . ", ErrorMsg=" . ErrorMsg)
-                if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
-                    LocalAttrErrors++
-                    continue  ; 单个属性失败不中断整体
+                if (attr.Value = "" || (attr.Format = "星级" && attr.Value = "0")) {
+                    continue
                 }
-                ; 移除手动关联插入，因为 InsertAttribute 已处理
+                EscapedFormat := StrReplace(attr.Format, "'", "''")
+                EscapedValue := StrReplace(attr.Value, "'", "''")
+                InsertAttributeSQL := "INSERT INTO 数据收集_关联属性 (lParentID, Format, Value) VALUES (" . FinalID . ", '" . EscapedFormat . "', '" . EscapedValue . "');"
+                AddDebugLog("[WriteData1016] 尝试直接插入属性: " . InsertAttributeSQL)
+                if (!SQLiteDB.Exec(InsertAttributeSQL)) {
+                    LocalAttrErrors++
+                    AddDebugLog("[WriteData1016] 直接插入属性失败: " . SQLiteDB._ErrMsg())
+                }
             }
             if (LocalAttrErrors > 0) {
                 AddDebugLog("[WriteData1016] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
