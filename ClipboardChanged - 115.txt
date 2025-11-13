@@ -818,24 +818,26 @@ ClipboardChanged(type) {
             IsFolderPath := (RegExMatch(AppName, "^[A-Za-z]:\\.*$") && InStr(FileExist(AppName), "D"))
             if (!IsFolderPath) {
                 Tags := []
-                if (RegExMatch(AppName, "^(.+)\s*-\s*(.+)$", Match)) {
+                if (RegExMatch(WindowTitle, "^(.+)\s*-\s*(.+)$", Match)) {
                     FirstPart := Trim(Match1)
-                    SecondPart := Trim(Match2)
                     if (!RegExMatch(FirstPart, "\.[a-zA-Z0-9]{1,4}$")) {
                         Tags.Push(FirstPart)
                     }
-                    if (SecondPart = "Google Chrome") {
-                        Tags.Push("Chrome")
-                    } else {
-                        Tags.Push(SecondPart)
+                }
+
+                if (AppName = "Google Chrome") {
+                    AlreadyExists := false
+                    for index, Tag in Tags {
+                        if (Tag = "Chrome") {
+                            AlreadyExists := true
+                            break
+                        }
                     }
-                } else {
-                    if (AppName = "Google Chrome") {
+                    if (!AlreadyExists) {
                         Tags.Push("Chrome")
-                    } else {
-                        Tags.Push(AppName)
                     }
                 }
+
                 for index, Tag in Tags {
                     if (Tag != "" && Tag != "未知应用") {
                         ; 🔥 改回 "标签" 进行测试
@@ -879,6 +881,51 @@ ClipboardChanged(type) {
             }
         }
         
+        ; 🔥 [Jules] 开始：将关联属性表中的“标签”汇总更新到主表
+        CollectedTags := []
+        for index, attr in Attributes {
+            if (attr.Format = "标签") {
+                CollectedTags.Push(attr.Value)
+            }
+        }
+
+        if (CollectedTags.MaxIndex() > 0) {
+            JoinedTags := ""
+            Loop, % CollectedTags.MaxIndex() {
+                if (A_Index > 1) {
+                    JoinedTags .= ","
+                }
+                JoinedTags .= CollectedTags[A_Index]
+            }
+
+            EscapedTags := StrReplace(JoinedTags, "'", "''")
+            UpdateTagsSQL := "UPDATE 历史数据 SET 标签 = '" . EscapedTags . "' WHERE ID = " . FinalID . ";"
+
+            Success := false
+            RetryCount := 3
+            while (RetryCount > 0) {
+                if (SQLiteDB.Exec(UpdateTagsSQL)) {
+                    Success := true
+                    break
+                }
+                ErrorMsg := SQLiteDB._ErrMsg()
+                if (InStr(ErrorMsg, "SQLITE_BUSY")) {
+                    Sleep, 100
+                    RetryCount--
+                    continue
+                }
+                break
+            }
+
+            if (!Success) {
+                RollbackSafeTransaction("ClipboardChanged")
+                MsgBox, 16, 错误, 错误 ID：TAG_UPDATE_FAIL 主表标签字段更新失败: %ErrorMsg%
+                LoadData()
+                Return
+            }
+        }
+        ; 🔥 [Jules] 结束
+
         ; 🔥 所有属性插入完成后检查
         FinalCheckSQL := "SELECT ID, 标签, 类型, 分组, 应用名称, 标识 FROM 历史数据 WHERE ID = " . FinalID . ";"
         FinalResult := {}
