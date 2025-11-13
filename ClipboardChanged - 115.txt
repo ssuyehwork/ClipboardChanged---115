@@ -1,9 +1,9 @@
 WriteData1014() {
     Global SQLiteDB, DBPath, ClipboardLock, ProcessingContext, g_CurrentRecord, ContentCache, G_last_insert_rowid
-    ; AddDebugLog("[WriteData1014] 开始")
+    AddDebugLog("[WriteData1014] 开始")
     ClipboardLock := 1
     ProcessingContext := "WriteData1014"
-    
+
     WinGetTitle, WindowTitle, A
     if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
         AppName := Trim(Match2)
@@ -22,7 +22,7 @@ WriteData1014() {
     try {
         if (!CheckDBUnlocked(DBPath)) {
             MsgBox, 16, 错误, 错误 ID：455988 数据库被占用，请稍后再试
-            ; AddDebugLog("[WriteData1014] 数据库被占用")
+            AddDebugLog("[WriteData1014] 数据库被占用")
             Return
         }
 
@@ -31,7 +31,7 @@ WriteData1014() {
             if (!SQLiteDB.OpenDB(DBPath)) {
                 ErrorMsg := SQLiteDB._ErrMsg()
                 MsgBox, 16, 错误, 错误 ID：753594 数据库打开失败: %ErrorMsg%
-                ; AddDebugLog("[WriteData1014] 打开数据库失败: " . ErrorMsg)
+                AddDebugLog("[WriteData1014] 打开数据库失败: " . ErrorMsg)
                 Return
             }
         }
@@ -41,7 +41,7 @@ WriteData1014() {
         CheckResult := {}
         if (!SQLiteDB.GetTable(CheckSQL, CheckResult) || CheckResult.RowCount = 0) {
             MsgBox, 16, 错误, 错误 ID：233830 数据收集表不存在！
-            ; AddDebugLog("[WriteData1014] 数据收集表不存在")
+            AddDebugLog("[WriteData1014] 数据收集表不存在")
             Return
         }
         CheckPropTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='数据收集_关联属性';"
@@ -198,7 +198,7 @@ WriteData1014() {
             RetryCount := 3
             LocalG_last_insert_rowid := ""
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 标识 = '" . EscapedIdentifier . "', 类型 = '" . EscapedFormat . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(UpdateSQL)) {
                         Success := true
@@ -261,7 +261,7 @@ WriteData1014() {
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
                 RetryCount := 3
                 Success := false
                 while (RetryCount > 0) {
@@ -310,7 +310,7 @@ WriteData1014() {
             Attributes := []
             Attributes.Push({Format: "星级", Value: "0"})
             if (Tag != "") {
-                Attributes.Push({Format: "标签", Value: Tag})
+                Attributes.Push({Format: "关键字", Value: Tag})
             }
             if (Group != "") {
                 Attributes.Push({Format: "分组", Value: Group})
@@ -338,18 +338,23 @@ WriteData1014() {
                 }
                 for idx, TagItem in Tags {
                     if (TagItem != "" && TagItem != "未知应用") {
-                        Attributes.Push({Format: "标签", Value: TagItem})
+                        Attributes.Push({Format: "关键字", Value: TagItem})
                     }
                 }
             }
             if (Identifier != "") {
                 Attributes.Push({Format: "标识", Value: Identifier})
             }
+            if (Format != "") {
+                Attributes.Push({Format: "类型", Value: Format})
+            }
 
             LocalAttrErrors := 0
             for idx, attr in Attributes {
+                AddDebugLog("[WriteData1014] 尝试插入属性: Format=" . attr.Format . ", Value=" . attr.Value . ", ID=" . FinalID)
                 Result := InsertAttribute("数据收集", FinalID, attr.Format, attr.Value)  ; 添加 TableName 参数
                 ErrorMsg := Result.ErrorMsg
+                AddDebugLog("[WriteData1014] 插入结果: Success=" . Result.Success . ", ErrorMsg=" . ErrorMsg)
                 if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
                     LocalAttrErrors++
                     continue  ; 单个属性失败不中断整体
@@ -357,13 +362,13 @@ WriteData1014() {
                 ; 移除手动关联插入，因为 InsertAttribute 已处理
             }
             if (LocalAttrErrors > 0) {
-                ; AddDebugLog("[WriteData1014] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
+                AddDebugLog("[WriteData1014] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
             }
 
             ; 验证属性（用ID）
             AttrCount := VerifyAllAttributes(FinalID, "数据收集")  ; 调整为ID + 表名
             if (AttrCount < 0) {
-                ; AddDebugLog("[WriteData1014] 属性验证失败 for ID " . FinalID)
+                AddDebugLog("[WriteData1014] 属性验证失败 for ID " . FinalID)
             }
 
             ; 更新全局ID（当前行）
@@ -372,7 +377,7 @@ WriteData1014() {
             }
 
             InsertedCount++
-            ; AddDebugLog("[WriteData1014] 成功处理行 " . index . "，ID: " . FinalID)
+            AddDebugLog("[WriteData1014] 成功处理行 " . index . "，ID: " . FinalID)
         }
 
         ; 统一提交事务（参考TogglePinned批量）
@@ -398,7 +403,7 @@ WriteData1014() {
         }
 
         SB_SetText("WriteData1014: 批量插入完成，成功 " . InsertedCount . " 条" . (FailedCount > 0 ? "，失败 " . FailedCount . " 条" : ""))
-        ; AddDebugLog("[WriteData1014] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
+        AddDebugLog("[WriteData1014] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
     } catch e {
         eMessage := e.Message
         RollbackSafeTransaction("WriteData1014-Batch")
@@ -435,8 +440,8 @@ WriteData1014() {
         SaveDataTip()
         SetTimer, WatchDatabaseDir, 3000
     }
-    
-    ; AddDebugLog("[WriteData1014] 结束")
+
+    AddDebugLog("[WriteData1014] 结束")
 }
 
 ;===================|===================
@@ -445,7 +450,7 @@ WriteData1015() {
     Global SQLiteDB, DBPath, ClipboardLock, ProcessingContext, g_CurrentRecord, ContentCache, G_last_insert_rowid
     ClipboardLock := 1
     ProcessingContext := "WriteData1015"
-    
+
     WinGetTitle, WindowTitle, A
     if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
         AppName := Trim(Match2)
@@ -632,7 +637,7 @@ WriteData1015() {
             RetryCount := 3
             LocalG_last_insert_rowid := ""
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 标识 = '" . EscapedIdentifier . "', 类型 = '" . EscapedFormat . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(UpdateSQL)) {
                         Success := true
@@ -695,7 +700,7 @@ WriteData1015() {
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
                 RetryCount := 3
                 Success := false
                 while (RetryCount > 0) {
@@ -743,7 +748,7 @@ WriteData1015() {
             Attributes := []
             Attributes.Push({Format: "星级", Value: "0"})
             if (Tag != "") {
-                Attributes.Push({Format: "标签", Value: Tag})
+                Attributes.Push({Format: "关键字", Value: Tag})
             }
             if (Group != "") {
                 Attributes.Push({Format: "分组", Value: Group})
@@ -771,18 +776,23 @@ WriteData1015() {
                 }
                 for idx, t in Tags {
                     if (t != "" && t != "未知应用") {
-                        Attributes.Push({Format: "标签", Value: t})
+                        Attributes.Push({Format: "关键字", Value: t})
                     }
                 }
             }
             if (Identifier != "") {
                 Attributes.Push({Format: "标识", Value: Identifier})
             }
+            if (Format != "") {
+                Attributes.Push({Format: "类型", Value: Format})
+            }
 
             LocalAttrErrors := 0
             for idx, attr in Attributes {
+                AddDebugLog("[WriteData1015] 尝试插入属性: Format=" . attr.Format . ", Value=" . attr.Value . ", ID=" . FinalID)
                 Result := InsertAttribute("数据收集", FinalID, attr.Format, attr.Value)
                 ErrorMsg := Result.ErrorMsg
+                AddDebugLog("[WriteData1015] 插入结果: Success=" . Result.Success . ", ErrorMsg=" . ErrorMsg)
                 if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
                     LocalAttrErrors++
                     continue
@@ -853,10 +863,10 @@ WriteData1015() {
 
 WriteData1016() {
     Global SQLiteDB, DBPath, ClipboardLock, ProcessingContext, g_CurrentRecord, ContentCache, G_last_insert_rowid
-    ; AddDebugLog("[WriteData1016] 开始")
+    AddDebugLog("[WriteData1016] 开始")
     ClipboardLock := 1
     ProcessingContext := "WriteData1016"
-    
+
     WinGetTitle, WindowTitle, A
     if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
         AppName := Trim(Match2)
@@ -946,7 +956,7 @@ WriteData1016() {
             line1 := ContentCache[i]
             line2 := ContentCache[i+1]
             ClipData := line1 . line2
-            
+
             ; 清理内容
             ClipData := RegExReplace(ClipData, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "")
             ClipData := Trim(ClipData)
@@ -1054,7 +1064,7 @@ WriteData1016() {
             RetryCount := 3
             LocalG_last_insert_rowid := ""
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 标识 = '" . EscapedIdentifier . "', 类型 = '" . EscapedFormat . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(UpdateSQL)) {
                         Success := true
@@ -1117,7 +1127,7 @@ WriteData1016() {
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
                 RetryCount := 3
                 Success := false
                 while (RetryCount > 0) {
@@ -1166,7 +1176,7 @@ WriteData1016() {
             Attributes := []
             Attributes.Push({Format: "星级", Value: "0"})
             if (Tag != "") {
-                Attributes.Push({Format: "标签", Value: Tag})
+                Attributes.Push({Format: "关键字", Value: Tag})
             }
             if (Group != "") {
                 Attributes.Push({Format: "分组", Value: Group})
@@ -1194,18 +1204,23 @@ WriteData1016() {
                 }
                 for idx, t in Tags {
                     if (t != "" && t != "未知应用") {
-                        Attributes.Push({Format: "标签", Value: t})
+                        Attributes.Push({Format: "关键字", Value: t})
                     }
                 }
             }
             if (Identifier != "") {
                 Attributes.Push({Format: "标识", Value: Identifier})
             }
+            if (Format != "") {
+                Attributes.Push({Format: "类型", Value: Format})
+            }
 
             LocalAttrErrors := 0
             for idx, attr in Attributes {
+                AddDebugLog("[WriteData1016] 尝试插入属性: Format=" . attr.Format . ", Value=" . attr.Value . ", ID=" . FinalID)
                 Result := InsertAttribute("数据收集", FinalID, attr.Format, attr.Value)  ; 添加 TableName 参数
                 ErrorMsg := Result.ErrorMsg
+                AddDebugLog("[WriteData1016] 插入结果: Success=" . Result.Success . ", ErrorMsg=" . ErrorMsg)
                 if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
                     LocalAttrErrors++
                     continue  ; 单个属性失败不中断整体
@@ -1213,13 +1228,13 @@ WriteData1016() {
                 ; 移除手动关联插入，因为 InsertAttribute 已处理
             }
             if (LocalAttrErrors > 0) {
-                ; AddDebugLog("[WriteData1016] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
+                AddDebugLog("[WriteData1016] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
             }
 
             ; 验证属性（用ID）
             AttrCount := VerifyAllAttributes(FinalID, "数据收集")  ; 调整为ID + 表名
             if (AttrCount < 0) {
-                ; AddDebugLog("[WriteData1016] 属性验证失败 for ID " . FinalID)
+                AddDebugLog("[WriteData1016] 属性验证失败 for ID " . FinalID)
             }
 
             ; 更新全局ID（当前行）
@@ -1228,7 +1243,7 @@ WriteData1016() {
             }
 
             InsertedCount++
-            ; AddDebugLog("[WriteData1016] 成功处理对 " . A_Index . "，ID: " . FinalID)
+            AddDebugLog("[WriteData1016] 成功处理对 " . A_Index . "，ID: " . FinalID)
         }
 
         ; 统一提交事务（参考TogglePinned批量）
@@ -1254,7 +1269,7 @@ WriteData1016() {
         }
 
         SB_SetText("WriteData1016: 批量插入完成，成功 " . InsertedCount . " 条" . (FailedCount > 0 ? "，失败 " . FailedCount . " 条" : ""))
-        ; AddDebugLog("[WriteData1016] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
+        AddDebugLog("[WriteData1016] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
     } catch e {
         eMessage := e.Message
         RollbackSafeTransaction("WriteData1016-Batch")
@@ -1291,6 +1306,6 @@ WriteData1016() {
         SaveDataTip()
         SetTimer, WatchDatabaseDir, 3000
     }
-    
-    ; AddDebugLog("[WriteData1016] 结束")
+
+    AddDebugLog("[WriteData1016] 结束")
 }
