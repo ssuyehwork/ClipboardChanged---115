@@ -1,9 +1,9 @@
 WriteData1014() {
     Global SQLiteDB, DBPath, ClipboardLock, ProcessingContext, g_CurrentRecord, ContentCache, G_last_insert_rowid
-    ; AddDebugLog("[WriteData1014] 开始")
+    AddDebugLog("[WriteData1014] 开始")
     ClipboardLock := 1
     ProcessingContext := "WriteData1014"
-    
+
     WinGetTitle, WindowTitle, A
     if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
         AppName := Trim(Match2)
@@ -22,7 +22,7 @@ WriteData1014() {
     try {
         if (!CheckDBUnlocked(DBPath)) {
             MsgBox, 16, 错误, 错误 ID：455988 数据库被占用，请稍后再试
-            ; AddDebugLog("[WriteData1014] 数据库被占用")
+            AddDebugLog("[WriteData1014] 数据库被占用")
             Return
         }
 
@@ -31,7 +31,7 @@ WriteData1014() {
             if (!SQLiteDB.OpenDB(DBPath)) {
                 ErrorMsg := SQLiteDB._ErrMsg()
                 MsgBox, 16, 错误, 错误 ID：753594 数据库打开失败: %ErrorMsg%
-                ; AddDebugLog("[WriteData1014] 打开数据库失败: " . ErrorMsg)
+                AddDebugLog("[WriteData1014] 打开数据库失败: " . ErrorMsg)
                 Return
             }
         }
@@ -41,7 +41,7 @@ WriteData1014() {
         CheckResult := {}
         if (!SQLiteDB.GetTable(CheckSQL, CheckResult) || CheckResult.RowCount = 0) {
             MsgBox, 16, 错误, 错误 ID：233830 数据收集表不存在！
-            ; AddDebugLog("[WriteData1014] 数据收集表不存在")
+            AddDebugLog("[WriteData1014] 数据收集表不存在")
             Return
         }
         CheckPropTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='数据收集_关联属性';"
@@ -99,32 +99,23 @@ WriteData1014() {
                 continue
             }
 
-            ; 双语分离处理
-            chineseText := ""
-            nonChineseText := ""
-            hasThai := false
+            Remark := SubStr(ClipData, 1, 1000)
+            Remark := RegExReplace(Remark, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ")
+            Content := ""
             Tag := ""
+            hasThai := false
             Loop, Parse, ClipData
             {
                 char := A_LoopField
-                if (IsChinese(char) || RegExMatch(char, "\d") || RegExMatch(char, "\p{P}"))
-                    chineseText .= char
-                else
-                    nonChineseText .= char
-                if (IsThai(char))
+                if (IsThai(char)) {
                     hasThai := true
-            }
-
-            Remark := chineseText != "" ? chineseText : SubStr(nonChineseText, 1, 1000)
-            Remark := RegExReplace(Remark, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ")
-            Content := ""
-
-            if (hasThai) {
-                Tag := "泰文"
+                    Tag := "泰文"
+                    break
+                }
             }
 
             ; 计算字节 (基于 Content)
-            ByteCount := StrPut(nonChineseText, "UTF-8") - 1
+            ByteCount := StrPut(ClipData, "UTF-8") - 1
             Bytes := ""
             if (ByteCount > 0) {
                 if (ByteCount < 1024)
@@ -138,7 +129,7 @@ WriteData1014() {
             }
 
             try {
-                HashValue := Crypt.Hash.Str(nonChineseText, "SHA256")
+                HashValue := Crypt.Hash.Str(ClipData, "SHA256")
             } catch e {
                 eMessage := e.Message
                 MsgBox, 16, 错误, 错误 ID：542882 计算哈希值失败: %eMessage%
@@ -192,7 +183,7 @@ WriteData1014() {
             EscapedContent := StrReplace(Content, "'", "''")
             EscapedGroup := StrReplace(Group, "'", "''")
             EscapedAppName := StrReplace(AppName, "'", "''")
-            EscapedClipData := StrReplace(nonChineseText, "'", "''")
+            EscapedClipData := StrReplace(ClipData, "'", "''")
 
             Success := false
             RetryCount := 3
@@ -330,17 +321,17 @@ WriteData1014() {
             ; 属性插入 (加Tag，参考ClipboardChanged，用DataID)
             Attributes := []
             Attributes.Push({Format: "星级", Value: "0"})
-            
+
             ; 添加窗口详情
             if (WindowDetail != "") {
                 Attributes.Push({Format: "窗口详情", Value: WindowDetail})
             }
-            
+
             ; 添加标识
             if (Identifier != "") {
                 Attributes.Push({Format: "标识", Value: Identifier})
             }
-            
+
             ; 添加类型（拆分Format字符串）
             if (Format != "") {
                 FormatParts := StrSplit(Format, ",")
@@ -351,12 +342,12 @@ WriteData1014() {
                     }
                 }
             }
-            
+
             ; 添加分组
             if (Group != "") {
                 Attributes.Push({Format: "分组", Value: Group})
             }
-            
+
             ; 添加应用名称（并拆分标签）
             if (AppName != "" && AppName != "未知应用") {
                 Attributes.Push({Format: "应用名称", Value: AppName})
@@ -385,7 +376,7 @@ WriteData1014() {
                     }
                 }
             }
-            
+
             ; 现有标签（如泰文）
             if (Tag != "") {
                 Attributes.Push({Format: "关键字", Value: Tag})
@@ -402,13 +393,13 @@ WriteData1014() {
                 ; 移除手动关联插入，因为 InsertAttribute 已处理
             }
             if (LocalAttrErrors > 0) {
-                ; AddDebugLog("[WriteData1014] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
+                AddDebugLog("[WriteData1014] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
             }
 
             ; 验证属性（用ID）
             AttrCount := VerifyAllAttributes(FinalID, "数据收集")  ; 调整为ID + 表名
             if (AttrCount < 0) {
-                ; AddDebugLog("[WriteData1014] 属性验证失败 for ID " . FinalID)
+                AddDebugLog("[WriteData1014] 属性验证失败 for ID " . FinalID)
             }
 
             ; 更新全局ID（当前行）
@@ -417,7 +408,7 @@ WriteData1014() {
             }
 
             InsertedCount++
-            ; AddDebugLog("[WriteData1014] 成功处理行 " . index . "，ID: " . FinalID)
+            AddDebugLog("[WriteData1014] 成功处理行 " . index . "，ID: " . FinalID)
         }
 
         ; 统一提交事务（参考TogglePinned批量）
@@ -443,7 +434,7 @@ WriteData1014() {
         }
 
         SB_SetText("WriteData1014: 批量插入完成，成功 " . InsertedCount . " 条" . (FailedCount > 0 ? "，失败 " . FailedCount . " 条" : ""))
-        ; AddDebugLog("[WriteData1014] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
+        AddDebugLog("[WriteData1014] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
     } catch e {
         eMessage := e.Message
         RollbackSafeTransaction("WriteData1014-Batch")
@@ -480,15 +471,16 @@ WriteData1014() {
         SaveDataTip()
         SetTimer, WatchDatabaseDir, 3000
     }
-    
-    ; AddDebugLog("[WriteData1014] 结束")
+
+    AddDebugLog("[WriteData1014] 结束")
 }
 
 WriteData1015() {
     Global SQLiteDB, DBPath, ClipboardLock, ProcessingContext, g_CurrentRecord, ContentCache, G_last_insert_rowid
+    AddDebugLog("[WriteData1015] 开始")
     ClipboardLock := 1
     ProcessingContext := "WriteData1015"
-    
+
     WinGetTitle, WindowTitle, A
     if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
         AppName := Trim(Match2)
@@ -675,7 +667,7 @@ WriteData1015() {
             RetryCount := 3
             LocalG_last_insert_rowid := ""
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '', 标识 = '', 类型 = '', 分组 = '', 应用名称 = '' WHERE ID = " . ExistingID . ";"
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '', 字节 = '" . EscapedBytes . "', 窗口详情 = '', 标识 = '', 类型 = '', 分组 = '', 应用名称 = '' WHERE ID = " . ExistingID . ";"
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(UpdateSQL)) {
                         Success := true
@@ -759,7 +751,7 @@ WriteData1015() {
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '', '', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '', '', 1);"
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '', '', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '', '', '', 1);"
                 RetryCount := 3
                 Success := false
                 while (RetryCount > 0) {
@@ -806,17 +798,17 @@ WriteData1015() {
 
             Attributes := []
             Attributes.Push({Format: "星级", Value: "0"})
-            
+
             ; 添加窗口详情
             if (WindowDetail != "") {
                 Attributes.Push({Format: "窗口详情", Value: WindowDetail})
             }
-            
+
             ; 添加标识
             if (Identifier != "") {
                 Attributes.Push({Format: "标识", Value: Identifier})
             }
-            
+
             ; 添加类型（拆分Format字符串）
             if (Format != "") {
                 FormatParts := StrSplit(Format, ",")
@@ -827,12 +819,12 @@ WriteData1015() {
                     }
                 }
             }
-            
+
             ; 添加分组
             if (Group != "") {
                 Attributes.Push({Format: "分组", Value: Group})
             }
-            
+
             ; 添加应用名称（并拆分标签）
             if (AppName != "" && AppName != "未知应用") {
                 Attributes.Push({Format: "应用名称", Value: AppName})
@@ -861,7 +853,7 @@ WriteData1015() {
                     }
                 }
             }
-            
+
             ; 现有标签（如泰文）
             if (Tag != "") {
                 Attributes.Push({Format: "关键字", Value: Tag})
@@ -876,10 +868,14 @@ WriteData1015() {
                     continue
                 }
             }
+            if (LocalAttrErrors > 0) {
+                AddDebugLog("[WriteData1015] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
+            }
+
 
             AttrCount := VerifyAllAttributes(FinalID, "数据收集")
             if (AttrCount < 0) {
-                ;
+                AddDebugLog("[WriteData1015] 属性验证失败 for ID " . FinalID)
             }
 
             if (LocalG_last_insert_rowid != "") {
@@ -938,10 +934,10 @@ WriteData1015() {
 
 WriteData1016() {
     Global SQLiteDB, DBPath, ClipboardLock, ProcessingContext, g_CurrentRecord, ContentCache, G_last_insert_rowid
-    ; AddDebugLog("[WriteData1016] 开始")
+    AddDebugLog("[WriteData1016] 开始")
     ClipboardLock := 1
     ProcessingContext := "WriteData1016"
-    
+
     WinGetTitle, WindowTitle, A
     if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
         AppName := Trim(Match2)
@@ -1031,7 +1027,7 @@ WriteData1016() {
             line1 := ContentCache[i]
             line2 := ContentCache[i+1]
             ClipData := line1 . line2
-            
+
             ; 清理内容
             ClipData := RegExReplace(ClipData, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "")
             ClipData := Trim(ClipData)
@@ -1139,7 +1135,7 @@ WriteData1016() {
             RetryCount := 3
             LocalG_last_insert_rowid := ""
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '', 标识 = '', 类型 = '', 分组 = '', 应用名称 = '' WHERE ID = " . ExistingID . ";"
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '', 字节 = '" . EscapedBytes . "', 窗口详情 = '', 标识 = '', 类型 = '', 分组 = '', 应用名称 = '' WHERE ID = " . ExistingID . ";"
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(UpdateSQL)) {
                         Success := true
@@ -1223,7 +1219,7 @@ WriteData1016() {
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '', '', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '', '', 1);"
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '', '', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '', '', '', 1);"
                 RetryCount := 3
                 Success := false
                 while (RetryCount > 0) {
@@ -1271,17 +1267,17 @@ WriteData1016() {
             ; 属性插入 (加Tag，参考ClipboardChanged，用DataID)
             Attributes := []
             Attributes.Push({Format: "星级", Value: "0"})
-            
+
             ; 添加窗口详情
             if (WindowDetail != "") {
                 Attributes.Push({Format: "窗口详情", Value: WindowDetail})
             }
-            
+
             ; 添加标识
             if (Identifier != "") {
                 Attributes.Push({Format: "标识", Value: Identifier})
             }
-            
+
             ; 添加类型（拆分Format字符串）
             if (Format != "") {
                 FormatParts := StrSplit(Format, ",")
@@ -1292,12 +1288,12 @@ WriteData1016() {
                     }
                 }
             }
-            
+
             ; 添加分组
             if (Group != "") {
                 Attributes.Push({Format: "分组", Value: Group})
             }
-            
+
             ; 添加应用名称（并拆分标签）
             if (AppName != "" && AppName != "未知应用") {
                 Attributes.Push({Format: "应用名称", Value: AppName})
@@ -1326,7 +1322,7 @@ WriteData1016() {
                     }
                 }
             }
-            
+
             ; 现有标签（如泰文）
             if (Tag != "") {
                 Attributes.Push({Format: "关键字", Value: Tag})
@@ -1343,13 +1339,13 @@ WriteData1016() {
                 ; 移除手动关联插入，因为 InsertAttribute 已处理
             }
             if (LocalAttrErrors > 0) {
-                ; AddDebugLog("[WriteData1016] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
+                AddDebugLog("[WriteData1016] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
             }
 
             ; 验证属性（用ID）
             AttrCount := VerifyAllAttributes(FinalID, "数据收集")  ; 调整为ID + 表名
             if (AttrCount < 0) {
-                ; AddDebugLog("[WriteData1016] 属性验证失败 for ID " . FinalID)
+                AddDebugLog("[WriteData1016] 属性验证失败 for ID " . FinalID)
             }
 
             ; 更新全局ID（当前行）
@@ -1358,7 +1354,7 @@ WriteData1016() {
             }
 
             InsertedCount++
-            ; AddDebugLog("[WriteData1016] 成功处理对 " . A_Index . "，ID: " . FinalID)
+            AddDebugLog("[WriteData1016] 成功处理对 " . A_Index . "，ID: " . FinalID)
         }
 
         ; 统一提交事务（参考TogglePinned批量）
@@ -1384,7 +1380,7 @@ WriteData1016() {
         }
 
         SB_SetText("WriteData1016: 批量插入完成，成功 " . InsertedCount . " 条" . (FailedCount > 0 ? "，失败 " . FailedCount . " 条" : ""))
-        ; AddDebugLog("[WriteData1016] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
+        AddDebugLog("[WriteData1016] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
     } catch e {
         eMessage := e.Message
         RollbackSafeTransaction("WriteData1016-Batch")
@@ -1421,8 +1417,8 @@ WriteData1016() {
         SaveDataTip()
         SetTimer, WatchDatabaseDir, 3000
     }
-    
-    ; AddDebugLog("[WriteData1016] 结束")
+
+    AddDebugLog("[WriteData1016] 结束")
 }
 
 InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
@@ -1508,12 +1504,12 @@ InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
     EscapedAttrFormat := StrReplace(AttrFormat, "'", "''")
     EscapedAttrValue := StrReplace(AttrValue, "'", "''")
     EscapedDataFormat := StrReplace(DataFormat, "'", "''")
-    
+
     ; 检查属性是否已存在（在全局关联属性表中）
     GetAttrIDSQL := "SELECT Local_ID, ID FROM 关联属性表 WHERE 属性类型 = '" . EscapedAttrFormat . "' AND 属性值 = '" . EscapedAttrValue . "' LIMIT 1;"
     AttrResult := {}
     AttrID := ""
-    
+
     SQLiteDB.Exec("PRAGMA busy_timeout = 5000;")
 
     if (SQLiteDB.GetTable(GetAttrIDSQL, AttrResult) && AttrResult.RowCount > 0) {
@@ -1527,7 +1523,7 @@ InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
         } else {
             InsertAttrSQL := "INSERT OR IGNORE INTO 关联属性表 (属性类型, 属性值) VALUES ('" . EscapedAttrFormat . "', '" . EscapedAttrValue . "');"
         }
-        
+
         RetryCount := 5
         Success := false
         while (RetryCount > 0) {
@@ -1546,13 +1542,13 @@ InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
             Result.ErrorMsg := "ERROR_202548: 插入关联属性表失败: " . ErrorMsg
             Return Result
         }
-        
+
         if (!Success) {
             Result.ErrorMsg := "ERROR_202548: 插入关联属性表失败，超过重试次数"
             ; AddDebugLog(Result.ErrorMsg)
             Return Result
         }
-        
+
         ; 获取新插入的 Local_ID 和 ID
         GetAttrIDSQL := "SELECT Local_ID, ID FROM 关联属性表 WHERE 属性类型 = '" . EscapedAttrFormat . "' AND 属性值 = '" . EscapedAttrValue . "' LIMIT 1;"
         RetryCount := 5
@@ -1577,7 +1573,7 @@ InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
             Sleep, 100
             RetryCount--
         }
-        
+
         if (AttrID = "") {
             Result.ErrorMsg := "ERROR_202549: 插入后未找到属性 ID，属性类型='" . AttrFormat . "', 属性值='" . AttrValue . "'"
             ; AddDebugLog(Result.ErrorMsg)
@@ -1596,7 +1592,7 @@ InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
     CheckExistSQL := "SELECT COUNT(*) FROM [" . EscapedPropTable . "] WHERE 属性ID = '" . StrReplace(AttrID, "'", "''") . "' AND ID = " . DataID . ";"
     CheckResult := {}
     ExistingCount := 0
-    
+
     if (SQLiteDB.GetTable(CheckExistSQL, CheckResult) && CheckResult.RowCount > 0) {
         ExistingCount := CheckResult.Rows[1][1]
         if (ExistingCount > 0) {
@@ -1620,7 +1616,7 @@ InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
     } else {
         InsertAssocSQL := "INSERT INTO [" . EscapedPropTable . "] (属性ID, ID) VALUES ('" . StrReplace(AttrID, "'", "''") . "', " . DataID . ");"
     }
-    
+
     RetryCount := 5
     Success := false
     while (RetryCount > 0) {
@@ -1639,7 +1635,7 @@ InsertAttribute(TableName, DataID, AttrFormat, AttrValue, DataFormat := "") {
         Result.ErrorMsg := "2716957: 插入属性关联失败: " . ErrorMsg
         Return Result
     }
-    
+
     if (!Success) {
         Result.ErrorMsg := "2720504: 插入属性关联失败，超过重试次数"
         ; AddDebugLog(Result.ErrorMsg)
@@ -1663,7 +1659,7 @@ ClipboardChanged(type) {
         Return
     }
     SetTimer, WatchDatabaseDir, Off
-  
+
     WinGet, ActiveID, ID, A
     WinGetTitle, WindowTitle, ahk_id %ActiveID%
     if (InStr(WindowTitle, "印象记忆-4")) {
@@ -1856,7 +1852,7 @@ ClipboardChanged(type) {
             Format := "CF_HDROP"
             ClipData := Clipboard
             FilePathsList := ""
-          
+
             Loop, Parse, Clipboard, `n, `r
             {
                 Path := Trim(A_LoopField)
@@ -1865,21 +1861,21 @@ ClipboardChanged(type) {
                     FileCount++
                 }
             }
-          
+
             if (FileCount = 0) {
                 RollbackSafeTransaction("ClipboardChanged")
                 LoadData()
                 Return
             }
-          
+
             Path := AllPaths[1]
             FileAttrib := FileExist(Path)
             isFolderMode := InStr(FileAttrib, "D")
-          
+
             SplitPath, Path, FileName, FileDir, FileExt, FileNameNoExt
             SplitPath, FileDir, , , , ParentDir
             Group := FileDir ? ParentDir : ""
-          
+
             if (isFolderMode) {
                 Loop, % AllPaths.MaxIndex() {
                     CurrentPath := AllPaths[A_Index]
@@ -1887,7 +1883,7 @@ ClipboardChanged(type) {
                     if (!InStr(CurrentAttrib, "D")) {
                         continue
                     }
-                  
+
                     LocalValidCount := 0
                     LocalTotalSize := 0
                     LocalFilePathsList := ""
@@ -1902,7 +1898,7 @@ ClipboardChanged(type) {
                     }
                     LocalFilePathsList := RTrim(LocalFilePathsList, "`n")
                     LocalClipData := LocalFilePathsList
-                  
+
                     LocalSizeStr := ""
                     if (LocalTotalSize > 0) {
                         if (LocalTotalSize < 1024)
@@ -1914,25 +1910,25 @@ ClipboardChanged(type) {
                         else
                             LocalSizeStr := Round(LocalTotalSize / (1024 * 1024 * 1024),2) . " GB"
                     }
-                  
+
                     SplitPath, CurrentPath, LocalFileName, LocalFileDir, , LocalFileNameNoExt
                     SplitPath, LocalFileDir, , , , LocalParentDir
                     LocalGroup := LocalFileDir ? LocalParentDir : ""
-                  
+
                     LocalTempRemark := "Copied Folder - " . LocalFileNameNoExt . " | 数量: 1 | 有效: " . LocalValidCount . " | 大小: " . LocalSizeStr
                     LocalContent := LocalTempRemark
                     LocalRemark := CurrentPath
-                  
+
                     LocalIdentifier := "📁"
                     LocalFormat := "CF_HDROP,📁"
-                  
+
                     ClipData := LocalClipData
                     Content := LocalContent
                     Remark := LocalRemark
                     Identifier := LocalIdentifier
                     Format := LocalFormat
                     Group := LocalGroup
-                  
+
                     gosub, InsertCommon
                     if (FinalID = "" || FinalID <= 0) {
                         return
@@ -1951,7 +1947,7 @@ ClipboardChanged(type) {
                 }
                 FilePathsList := RTrim(FilePathsList, "`n")
                 ClipData := FilePathsList
-              
+
                 SizeStr := ""
                 if (TotalSize > 0) {
                     if (TotalSize < 1024)
@@ -1963,7 +1959,7 @@ ClipboardChanged(type) {
                     else
                         SizeStr := Round(TotalSize / (1024 * 1024 * 1024),2) . " GB"
                 }
-              
+
                 Identifier := "📎"
                 Format := "CF_HDROP,📎"
                 if (FileExt != "") {
@@ -1972,7 +1968,7 @@ ClipboardChanged(type) {
                 TempRemark := "Copied File - " . FileNameNoExt . " | 数量: " . FileCount . " | 有效: " . ValidCount . " | 大小: " . SizeStr
                 Content := TempRemark
                 Remark := FileName
-              
+
                 gosub, InsertCommon
                 if (FinalID = "" || FinalID <= 0) {
                     return
@@ -2085,7 +2081,7 @@ ClipboardChanged(type) {
                     Content := "[文本] | " . CharCount . " 字符 | " . Bytes . " | " . LineCount . " 行"
                 }
             }
-          
+
             gosub, InsertCommon
             if (FinalID = "" || FinalID <= 0) {
                 return
@@ -2241,7 +2237,7 @@ ClipboardChanged(type) {
         Success := false
         RetryCount := 3
         G_last_insert_rowid := ""
-      
+
         if (ExistingID != "") {
             UpdateSQL := "UPDATE 历史数据 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 格式 = '" . EscapedFormat . "', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 处理状态 = NULL, 提示时间 = NULL, 提示 = NULL WHERE ID = " . ExistingID . ";"
             while (RetryCount > 0) {
@@ -2320,7 +2316,7 @@ ClipboardChanged(type) {
                 LoadData()
                 Return
             }
-          
+
             LastIDResult := {}
             G_last_insert_rowid := ""
             FinalID := ""
@@ -2334,16 +2330,16 @@ ClipboardChanged(type) {
                 LoadData()
                 Return
             }
-          
+
             if (FinalID = "" || FinalID <= 0) {
                 RollbackSafeTransaction("ClipboardChanged")
                 MsgBox, 16, 错误, 错误 ID：9003 全局ID无效: FinalID = %FinalID%
                 LoadData()
                 Return
             }
-          
+
             InsertMainSQL := "INSERT INTO 历史数据 (ID, 哈希值, 字节, 窗口详情, 格式, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 处理状态, 提示时间, 提示) VALUES (" . FinalID . ", '" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '" . EscapedFormat . "', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', NULL, NULL, NULL);"
-          
+
             RetryCount := 3
             Success := false
             while (RetryCount > 0) {
@@ -2380,11 +2376,11 @@ ClipboardChanged(type) {
                 ; LoadData()
                 Return
             }
-          
+
             MarkSQL := "UPDATE 中心化 SET 标记状态 = 1 WHERE Local_ID = " . FinalID . ";"
             if (!SQLiteDB.Exec(MarkSQL)) {
             }
-          
+
             InsertDataSQL := "INSERT INTO Data_历史数据 (lParentID, strClipBoardFormat, ooData) VALUES (" . FinalID . ", '" . EscapedFormat . "', '" . EscapedClipData . "');"
             RetryCount := 3
             Success := false
@@ -2464,7 +2460,7 @@ ClipboardChanged(type) {
             }
         }
         return
-      
+
     } catch e {
         eMessage := e.Message
         RollbackSafeTransaction("ClipboardChanged")
