@@ -538,23 +538,18 @@ WriteData1014() {
 
         AddDebugLog("[WriteData1014] 事务提交成功")
 
-        ; === 保存最后插入ID：Category_Main = Category_Sub = '最后插入ID' ===
-        DeleteRecordSQL := "DELETE FROM ""分类字典_One"" WHERE ""Category_Main"" = '最后插入ID' AND ""Category_Sub"" = '最后插入ID';"
-        SQLiteDB.Exec(DeleteRecordSQL)
+        DeleteRecordSQL := "DELETE FROM 分类字典_One WHERE Category_Main = '最后插入ID';"
+        if (!SQLiteDB.Exec(DeleteRecordSQL)) {
+            ErrorMsg := SQLiteDB._ErrMsg()
+            MsgBox, 16, 错误, 错误 ID：6839150 删除分类字典_One失败: %ErrorMsg%
+            Return
+        }
 
-        LastIDValue := (G_last_insert_rowid ? G_last_insert_rowid : "")
-        InsertRecordSQL := "INSERT OR REPLACE INTO ""分类字典_One"" "
-                         . "(""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
-                         . "VALUES ('最后插入ID', '最后插入ID', ?, 1, datetime('now','localtime'));"
-
-        if (SQLiteDB.ExecuteWithParams) {
-            SQLiteDB.ExecuteWithParams(InsertRecordSQL, [LastIDValue])
-        } else {
-            EscapedLastID := StrReplace(LastIDValue, "'", "''")
-            FallbackSQL := "INSERT OR REPLACE INTO ""分类字典_One"" "
-                         . "(""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
-                         . "VALUES ('最后插入ID', '最后插入ID', '" . EscapedLastID . "', 1, datetime('now','localtime'));"
-            SQLiteDB.Exec(FallbackSQL)
+        InsertRecordSQL := "INSERT OR REPLACE INTO 分类字典_One (Category_Main, Category_Sub, Record_Value) VALUES ('最后插入ID', '', " . (FinalID ? FinalID : "NULL") . ");"
+        if (!SQLiteDB.Exec(InsertRecordSQL)) {
+            ErrorMsg := SQLiteDB._ErrMsg()
+            MsgBox, 16, 错误, 错误 ID：5307196 插入分类字典_One失败: %ErrorMsg%
+            Return
         }
 
         SB_SetText("WriteData1014: 批量插入完成，成功 " . InsertedCount . " 条" . (FailedCount > 0 ? "，失败 " . FailedCount . " 条" : ""))
@@ -568,6 +563,20 @@ WriteData1014() {
     } finally {
         g_CurrentRecord.ID := G_last_insert_rowid
         g_CurrentRecord.TableName := "数据收集"
+
+        RetryPersist := 2
+        while (RetryPersist > 0) {
+            try {
+                SQL := "INSERT OR REPLACE INTO 分类字典_One (Category_Main, Category_Sub, Record_Value) VALUES ('CurrentRecord', '', " . (FinalID ? FinalID : "NULL") . ");"
+                if (SQLiteDB.Exec(SQL)) {
+                    break
+                }
+            } catch e {
+                ErrorMsg := e.Message
+            }
+            Sleep, 50
+            RetryPersist--
+        }
 
         SB_SetText("WriteData1014: 填充缓存 ID=" . SubStr(FinalID, 1, 8) . "..." . (InsertedCount > 0 ? " (成功 " . InsertedCount . ")" : ""))
 
@@ -1600,26 +1609,19 @@ WriteData1016() {
             Return
         }
         AddDebugLog("[WriteData1016] 事务提交成功")
-
-        ; === 标准化：保存最后插入ID ===
-        DeleteRecordSQL := "DELETE FROM ""分类字典_One"" WHERE ""Category_Main"" = '最后插入ID' AND ""Category_Sub"" = '最后插入ID';"
-        SQLiteDB.Exec(DeleteRecordSQL)
-
-        LastIDValue := (G_last_insert_rowid ? G_last_insert_rowid : "")
-        InsertRecordSQL := "INSERT OR REPLACE INTO ""分类字典_One"" "
-                         . "(""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
-                         . "VALUES ('最后插入ID', '最后插入ID', ?, 1, datetime('now','localtime'));"
-
-        if (SQLiteDB.ExecuteWithParams) {
-            SQLiteDB.ExecuteWithParams(InsertRecordSQL, [LastIDValue])
-        } else {
-            EscapedLastID := StrReplace(LastIDValue, "'", "''")
-            FallbackSQL := "INSERT OR REPLACE INTO ""分类字典_One"" "
-                         . "(""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
-                         . "VALUES ('最后插入ID', '最后插入ID', '" . EscapedLastID . "', 1, datetime('now','localtime'));"
-            SQLiteDB.Exec(FallbackSQL)
+        ; 分类字典_One（最后插入ID为最后一个FinalID）
+        DeleteRecordSQL := "DELETE FROM 分类字典_One WHERE Category_Main = '最后插入ID';"
+        if (!SQLiteDB.Exec(DeleteRecordSQL)) {
+            ErrorMsg := SQLiteDB._ErrMsg()
+            MsgBox, 16, 错误, 错误 ID：7291456 删除分类字典_One失败: %ErrorMsg%
+            Return
         }
-
+        InsertRecordSQL := "INSERT OR REPLACE INTO 分类字典_One (Category_Main, Category_Sub, Record_Value) VALUES ('最后插入ID', '', " . (FinalID ? FinalID : "NULL") . ");"
+        if (!SQLiteDB.Exec(InsertRecordSQL)) {
+            ErrorMsg := SQLiteDB._ErrMsg()
+            MsgBox, 16, 错误, 错误 ID：8592666 插入分类字典_One失败: %ErrorMsg%
+            Return
+        }
         SB_SetText("WriteData1016: 批量插入完成，成功 " . InsertedCount . " 条" . (FailedCount > 0 ? "，失败 " . FailedCount . " 条" : ""))
         AddDebugLog("[WriteData1016] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
     } catch e {
@@ -1632,9 +1634,21 @@ WriteData1016() {
         ; 缓存当前记录（最后一个）
         g_CurrentRecord.ID := G_last_insert_rowid
         g_CurrentRecord.TableName := "数据收集"
-
+        ; 持久化CurrentRecord（重试，参考ClipboardChanged，简化）
+        RetryPersist := 2
+        while (RetryPersist > 0) {
+            try {
+                SQL := "INSERT OR REPLACE INTO 分类字典_One (Category_Main, Category_Sub, Record_Value) VALUES ('CurrentRecord', '', " . (FinalID ? FinalID : "NULL") . ");"
+                if (SQLiteDB.Exec(SQL)) {
+                    break
+                }
+            } catch e {
+                ErrorMsg := e.Message
+            }
+            Sleep, 50
+            RetryPersist--
+        }
         SB_SetText("WriteData1016: 填充缓存 ID=" . SubStr(FinalID, 1, 8) . "..." . (InsertedCount > 0 ? " (成功 " . InsertedCount . ")" : ""))
-
         ProcessingContext := ""
         if (ClipboardLock = 1) {
             ClipboardLock := 0
