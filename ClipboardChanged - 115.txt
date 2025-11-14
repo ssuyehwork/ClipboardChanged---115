@@ -105,37 +105,15 @@ WriteData1014() {
                 continue
             }
 
-            ; 双语分离处理
-            chineseText := ""
-            nonChineseText := ""
-            hasThai := false
-            Tag := ""
-            Loop, Parse, ClipData
-            {
-                char := A_LoopField
-                if (IsChinese(char) || RegExMatch(char, "\d") || RegExMatch(char, "\p{P}"))
-                    chineseText .= char
-                else
-                    nonChineseText .= char
-                if (IsThai(char))
-                    hasThai := true
-            }
+            ; ⭐ 简化：移除双语分离，直接用全 ClipData 处理（无需区分语言）
+            AddDebugLog("[WriteData1014] 全内容长度: " . StrLen(ClipData))
 
-            AddDebugLog("[WriteData1014] 中文部分长度: " . StrLen(chineseText))
-            AddDebugLog("[WriteData1014] 非中文部分长度: " . StrLen(nonChineseText))
-            AddDebugLog("[WriteData1014] hasThai: " . hasThai)
-
-            Remark := chineseText != "" ? chineseText : SubStr(nonChineseText, 1, 1000)
+            Remark := SubStr(ClipData, 1, 1000)  ; Remark 用前 1000 字符
             Remark := RegExReplace(Remark, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ")
-            Content := ""
+            Content := ClipData  ; Content 用全文本
 
-            if (hasThai) {
-                Tag := "泰文"
-                AddDebugLog("[WriteData1014] 检测到泰文，设置 Tag = 泰文")
-            }
-
-            ; 计算字节 (基于 nonChineseText)
-            ByteCount := StrPut(nonChineseText, "UTF-8") - 1
+            ; 计算字节 (基于全 ClipData)
+            ByteCount := StrPut(ClipData, "UTF-8") - 1
             Bytes := ""
             if (ByteCount > 0) {
                 if (ByteCount < 1024)
@@ -148,8 +126,10 @@ WriteData1014() {
                     Bytes := Round(ByteCount / (1024 * 1024 * 1024),2) . " GB"
             }
 
+            AddDebugLog("[WriteData1014] 字节统计: " . Bytes)
+
             try {
-                HashValue := Crypt.Hash.Str(nonChineseText, "SHA256")
+                HashValue := Crypt.Hash.Str(ClipData, "SHA256")  ; 哈希基于全文本
                 AddDebugLog("[WriteData1014] 哈希值: " . SubStr(HashValue, 1, 16) . "...")
             } catch e {
                 eMessage := e.Message
@@ -159,17 +139,73 @@ WriteData1014() {
                 continue
             }
 
-            MaxSortSQL := "SELECT COALESCE(MAX(排序), 0) + 1 AS NewSort FROM 数据收集;"
+            ; ⭐ 修改2：使用分类字典_One表维护排序最大值（参考ClipboardChanged）
+            GetMaxSortSQL := "SELECT COALESCE(""Record_Value"", 0) FROM ""分类字典_One"" WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' LIMIT 1;"
             MaxSortResult := {}
-            NewSortValue := 1
-            if (!SQLiteDB.GetTable(MaxSortSQL, MaxSortResult)) {
-                ErrorMsg := SQLiteDB._ErrMsg()
-                MsgBox, 16, 错误, 错误 ID：5917034 获取最大排序值失败: %ErrorMsg%
-                FailedCount++
-                continue
+            CurrentMax := 0
+            if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                CurrentMax := MaxSortResult.Rows[1][1] + 0
+            } else {
+                ; 初始化
+                InitSQL := "INSERT OR IGNORE INTO ""分类字典_One"" (""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
+                         . "VALUES ('排序值', '最大值', '0', 0, datetime('now','localtime'));"
+                if (!SQLiteDB.Exec(InitSQL)) {
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    AddDebugLog("[WriteData1014] 排序初始化失败: " . ErrorMsg)
+                }
+                CurrentMax := 0
             }
-            if (MaxSortResult.RowCount > 0) {
-                NewSortValue := MaxSortResult.Rows[1][1]
+            
+            ; 循环获取唯一排序值
+            NewSortValue := 0
+            Loop {
+                NewSortValue := CurrentMax + 1
+                ; 尝试更新最大值
+                UpdateMaxSQL := "UPDATE ""分类字典_One"" SET ""Record_Value"" = ?, ""Update_Time"" = datetime('now','localtime') "
+                              . "WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' AND ""Record_Value"" = ?;"
+                Success := false
+                RetryCount := 3
+                while (RetryCount > 0) {
+                    if (SQLiteDB.ExecuteWithParams) {
+                        if (SQLiteDB.ExecuteWithParams(UpdateMaxSQL, [NewSortValue, CurrentMax])) {
+                            Success := true
+                            break
+                        }
+                    } else {
+                        FallbackSQL := "UPDATE ""分类字典_One"" SET ""Record_Value"" = '" . NewSortValue . "', ""Update_Time"" = datetime('now','localtime') "
+                                     . "WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' AND ""Record_Value"" = '" . CurrentMax . "';"
+                        if (SQLiteDB.Exec(FallbackSQL)) {
+                            Success := true
+                            break
+                        }
+                    }
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    if (InStr(ErrorMsg, "SQLITE_BUSY")) {
+                        Sleep, 50
+                        RetryCount--
+                        continue
+                    }
+                    if (InStr(ErrorMsg, "UNIQUE constraint failed")) {
+                        ; 重新读取
+                        if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                            CurrentMax := MaxSortResult.Rows[1][1] + 0
+                        } else {
+                            CurrentMax := 0
+                        }
+                        break
+                    }
+                    break
+                }
+                if (Success) {
+                    break
+                } else {
+                    ; 更新失败，重新读取当前最大值
+                    if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                        CurrentMax := MaxSortResult.Rows[1][1] + 0
+                    } else {
+                        CurrentMax := 0
+                    }
+                }
             }
 
             AddDebugLog("[WriteData1014] 新排序值: " . NewSortValue)
@@ -210,14 +246,18 @@ WriteData1014() {
             EscapedContent := StrReplace(Content, "'", "''")
             EscapedGroup := StrReplace(Group, "'", "''")
             EscapedAppName := StrReplace(AppName, "'", "''")
-            EscapedClipData := StrReplace(nonChineseText, "'", "''")
+            EscapedClipData := StrReplace(ClipData, "'", "''")  ; ooData 用全 ClipData
+
+            AddDebugLog("[WriteData1014] 准备插入到主表内容字段的长度: " . StrLen(EscapedContent))
+            AddDebugLog("[WriteData1014] 准备插入到 ooData 的内容长度: " . StrLen(EscapedClipData))
 
             Success := false
             RetryCount := 3
             LocalG_last_insert_rowid := ""
             
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '', 字节 = '" . EscapedBytes . "', 窗口详情 = '', 标识 = '', 类型 = '', 分组 = '', 应用名称 = '' WHERE ID = " . ExistingID . ";"
+                ; ⭐ 修改3：UPDATE时同时更新内容字段
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '', 标识 = '', 类型 = '', 分组 = '', 应用名称 = '' WHERE ID = " . ExistingID . ";"
                 
                 AddDebugLog("[WriteData1014] 执行 UPDATE 主表 SQL")
                 
@@ -247,12 +287,17 @@ WriteData1014() {
                 DeleteDataSQL := "DELETE FROM Data_数据收集 WHERE lParentID = " . FinalID . ";"
                 RetryCount := 3
                 Success := false
+                
+                AddDebugLog("[WriteData1014] 删除旧 Data_数据收集 记录")
+                
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(DeleteDataSQL)) {
                         Success := true
+                        AddDebugLog("[WriteData1014] 删除旧 Data 成功")
                         break
                     }
                     ErrorMsg := SQLiteDB._ErrMsg()
+                    AddDebugLog("[WriteData1014] 删除旧 Data 失败: " . ErrorMsg)
                     if (InStr(ErrorMsg, "SQLITE_BUSY")) {
                         Sleep, 100
                         RetryCount--
@@ -262,18 +307,24 @@ WriteData1014() {
                 }
                 if (!Success) {
                     FailedCount++
+                    AddDebugLog("[WriteData1014] 删除旧 Data 最终失败")
                     continue
                 }
 
                 DeletePropSQL := "DELETE FROM 数据收集_关联属性 WHERE ID = " . FinalID . ";"
                 RetryCount := 3
                 Success := false
+                
+                AddDebugLog("[WriteData1014] 删除旧关联属性")
+                
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(DeletePropSQL)) {
                         Success := true
+                        AddDebugLog("[WriteData1014] 删除旧属性成功")
                         break
                     }
                     ErrorMsg := SQLiteDB._ErrMsg()
+                    AddDebugLog("[WriteData1014] 删除旧属性失败: " . ErrorMsg)
                     if (InStr(ErrorMsg, "SQLITE_BUSY")) {
                         Sleep, 100
                         RetryCount--
@@ -283,18 +334,24 @@ WriteData1014() {
                 }
                 if (!Success) {
                     FailedCount++
+                    AddDebugLog("[WriteData1014] 删除旧属性最终失败")
                     continue
                 }
 
                 InsertDataSQL := "INSERT INTO Data_数据收集 (lParentID, strClipBoardFormat, ooData) VALUES (" . FinalID . ", 'CF_UNICODETEXT', '" . EscapedClipData . "');"
                 RetryCount := 3
                 Success := false
+                
+                AddDebugLog("[WriteData1014] 插入新 Data_数据收集，ooData 长度: " . StrLen(EscapedClipData))
+                
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(InsertDataSQL)) {
                         Success := true
+                        AddDebugLog("[WriteData1014] 插入新 Data 成功")
                         break
                     }
                     ErrorMsg := SQLiteDB._ErrMsg()
+                    AddDebugLog("[WriteData1014] 插入新 Data 失败: " . ErrorMsg)
                     if (InStr(ErrorMsg, "SQLITE_BUSY")) {
                         Sleep, 100
                         RetryCount--
@@ -304,10 +361,12 @@ WriteData1014() {
                 }
                 if (!Success) {
                     FailedCount++
+                    AddDebugLog("[WriteData1014] 插入新 Data 最终失败")
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '', '', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '', '', '', 1);"
+                ; ⭐ 修改4：INSERT时同时插入内容字段
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '', '', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '', '', 1);"
                 RetryCount := 3
                 Success := false
                 
@@ -316,7 +375,6 @@ WriteData1014() {
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(InsertMainSQL)) {
                         Success := true
-                        ; ⭐ 关键修复：使用 GetTable 获取 last_insert_rowid
                         LastIDResult := {}
                         if (SQLiteDB.GetTable("SELECT last_insert_rowid() AS newid;", LastIDResult) && LastIDResult.RowCount > 0) {
                             FinalID := LastIDResult.Rows[1][1]
@@ -332,6 +390,19 @@ WriteData1014() {
                     AddDebugLog("[WriteData1014] INSERT 主表失败: " . ErrorMsg)
                     if (InStr(ErrorMsg, "SQLITE_BUSY")) {
                         Sleep, 100
+                        RetryCount--
+                        continue
+                    }
+                    if (InStr(ErrorMsg, "UNIQUE constraint failed: 数据收集.排序")) {
+                        ; 排序值冲突，重新获取
+                        if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                            CurrentMax := MaxSortResult.Rows[1][1] + 0
+                        } else {
+                            CurrentMax := 0
+                        }
+                        NewSortValue := CurrentMax + 1
+                        InsertMainSQL := RegExReplace(InsertMainSQL, "排序, \d+", "排序, " . NewSortValue)
+                        Sleep, 50
                         RetryCount--
                         continue
                     }
@@ -425,12 +496,6 @@ WriteData1014() {
                     }
                 }
             }
-            
-            ; ⭐ 关键修复：泰文标签
-            if (Tag != "") {
-                Attributes.Push({Format: "关键字", Value: Tag})
-                AddDebugLog("[WriteData1014] 添加泰文关键字: " . Tag)
-            }
 
             AddDebugLog("[WriteData1014] 准备插入 " . Attributes.Length() . " 个属性")
 
@@ -521,6 +586,7 @@ WriteData1014() {
             PostMessage, 0x0400 + 1, 0, 0, , ahk_class AutoHotkey
         }
         LoadData()
+        GetGlobalMaxSortValue()  ; ⭐ 任务结束时更新全局最大排序值
         SaveDataTip()
         SetTimer, WatchDatabaseDir, 3000
     }
@@ -530,7 +596,6 @@ WriteData1014() {
 
 WriteData1015() {
     Global SQLiteDB, DBPath, ClipboardLock, ProcessingContext, g_CurrentRecord, ContentCache, G_last_insert_rowid
-    AddDebugLog("[WriteData1015] 开始")
     ClipboardLock := 1
     ProcessingContext := "WriteData1015"
     
@@ -552,7 +617,6 @@ WriteData1015() {
     try {
         if (!CheckDBUnlocked(DBPath)) {
             MsgBox, 16, 错误, 错误 ID：274754 数据库被占用，请稍后再试
-            AddDebugLog("[WriteData1015] 数据库被占用")
             Return
         }
 
@@ -561,7 +625,6 @@ WriteData1015() {
             if (!SQLiteDB.OpenDB(DBPath)) {
                 ErrorMsg := SQLiteDB._ErrMsg()
                 MsgBox, 16, 错误, 错误 ID：882623 数据库打开失败: %ErrorMsg%
-                AddDebugLog("[WriteData1015] 打开数据库失败: " . ErrorMsg)
                 Return
             }
         }
@@ -570,7 +633,6 @@ WriteData1015() {
         CheckResult := {}
         if (!SQLiteDB.GetTable(CheckSQL, CheckResult) || CheckResult.RowCount = 0) {
             MsgBox, 16, 错误, 错误 ID：972832 数据收集表不存在！
-            AddDebugLog("[WriteData1015] 数据收集表不存在")
             Return
         }
         CheckPropTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='数据收集_关联属性';"
@@ -618,16 +680,11 @@ WriteData1015() {
             Return
         }
 
-        AddDebugLog("[WriteData1015] ContentCache 总行数: " . ContentCache.MaxIndex())
-
         for index, ClipData in ContentCache {
-            AddDebugLog("[WriteData1015] 处理第 " . index . " 行，原始长度: " . StrLen(ClipData))
-            
             ClipData := RegExReplace(ClipData, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "")
             ClipData := Trim(ClipData)
             if (ClipData = "" || StrLen(ClipData) > 5000000) {
                 FailedCount++
-                AddDebugLog("[WriteData1015] 第 " . index . " 行跳过: 空内容或超长")
                 continue
             }
 
@@ -646,18 +703,15 @@ WriteData1015() {
                     hasThai := true
             }
 
-            AddDebugLog("[WriteData1015] 中文部分长度: " . StrLen(chineseText) . ", 非中文部分长度: " . StrLen(nonChineseText) . ", hasThai: " . hasThai)
-
             Remark := chineseText != "" ? chineseText : SubStr(nonChineseText, 1, 1000)
             Remark := RegExReplace(Remark, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ")
-            Content := ""
+            Content := nonChineseText
 
             if (hasThai) {
                 Tag := "泰文"
-                AddDebugLog("[WriteData1015] 检测到泰文，设置 Tag = 泰文")
             }
 
-            ByteCount := StrPut(nonChineseText, "UTF-8") - 1
+            ByteCount := StrPut(Content, "UTF-8") - 1
             Bytes := ""
             if (ByteCount > 0) {
                 if (ByteCount < 1024)
@@ -672,38 +726,89 @@ WriteData1015() {
 
             try {
                 HashValue := Crypt.Hash.Str(nonChineseText, "SHA256")
-                AddDebugLog("[WriteData1015] 哈希值: " . SubStr(HashValue, 1, 16) . "...")
             } catch e {
                 eMessage := e.Message
                 MsgBox, 16, 错误, 错误 ID：968710 计算哈希值失败: %eMessage%
-                AddDebugLog("[WriteData1015] 计算哈希值失败: " . eMessage)
                 FailedCount++
                 continue
             }
 
-            MaxSortSQL := "SELECT COALESCE(MAX(排序), 0) + 1 AS NewSort FROM 数据收集;"
+            ; === 使用分类字典_One表维护排序最大值（带唯一性处理）===
+            GetMaxSortSQL := "SELECT COALESCE(""Record_Value"", 0) FROM ""分类字典_One"" WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' LIMIT 1;"
             MaxSortResult := {}
-            NewSortValue := 1
-            if (!SQLiteDB.GetTable(MaxSortSQL, MaxSortResult)) {
-                ErrorMsg := SQLiteDB._ErrMsg()
-                MsgBox, 16, 错误, 错误 ID：202508 获取最大排序值失败: %ErrorMsg%
-                FailedCount++
-                continue
+            CurrentMax := 0
+            if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                CurrentMax := MaxSortResult.Rows[1][1] + 0 ; 强制转为数字
+            } else {
+                ; 初始化
+                InitSQL := "INSERT OR IGNORE INTO ""分类字典_One"" (""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
+                         . "VALUES ('排序值', '最大值', '0', 0, datetime('now','localtime'));"
+                if (!SQLiteDB.Exec(InitSQL)) {
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    MsgBox, 16, 错误, 错误 ID：新ID-排序初始化失败: %ErrorMsg%
+                    FailedCount++
+                    continue
+                }
+                CurrentMax := 0
             }
-            if (MaxSortResult.RowCount > 0) {
-                NewSortValue := MaxSortResult.Rows[1][1]
+            ; 循环获取唯一排序值
+            Loop {
+                NewSortValue := CurrentMax + 1
+                ; 尝试更新最大值
+                UpdateMaxSQL := "UPDATE ""分类字典_One"" SET ""Record_Value"" = ?, ""Update_Time"" = datetime('now','localtime') "
+                              . "WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' AND ""Record_Value"" = ?;"
+                Success := false
+                RetryCount := 3
+                while (RetryCount > 0) {
+                    if (SQLiteDB.ExecuteWithParams) {
+                        if (SQLiteDB.ExecuteWithParams(UpdateMaxSQL, [NewSortValue, CurrentMax])) {
+                            Success := true
+                            break
+                        }
+                    } else {
+                        FallbackSQL := "UPDATE ""分类字典_One"" SET ""Record_Value"" = '" . NewSortValue . "', ""Update_Time"" = datetime('now','localtime') "
+                                     . "WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' AND ""Record_Value"" = '" . CurrentMax . "';"
+                        if (SQLiteDB.Exec(FallbackSQL)) {
+                            Success := true
+                            break
+                        }
+                    }
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    if (InStr(ErrorMsg, "SQLITE_BUSY")) {
+                        Sleep, 50
+                        RetryCount--
+                        continue
+                    }
+                    ; 新增：检查唯一约束失败
+                    if (InStr(ErrorMsg, "UNIQUE constraint failed")) {
+                        ; 重新读取（使用修复后的 SQL）
+                        if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                            CurrentMax := MaxSortResult.Rows[1][1] + 0
+                        } else {
+                            CurrentMax := 0
+                        }
+                        break ; 退出 while，重试外层 Loop
+                    }
+                    break
+                }
+                if (Success) {
+                    ; 更新成功，说明 NewSortValue 可用
+                    break
+                } else {
+                    ; 更新失败，说明有并发，重新读取当前最大值
+                    if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                        CurrentMax := MaxSortResult.Rows[1][1] + 0
+                    } else {
+                        CurrentMax := 0
+                    }
+                }
             }
-
-            AddDebugLog("[WriteData1015] 新排序值: " . NewSortValue)
 
             ExistingID := ""
             CheckSQL := "SELECT ID FROM 数据收集 WHERE 哈希值 = ? LIMIT 1;"
             CheckResult := {}
             if (SQLiteDB.GetTable(CheckSQL, CheckResult, [HashValue]) && CheckResult.RowCount >= 1) {
                 ExistingID := CheckResult.Rows[1][1]
-                AddDebugLog("[WriteData1015] 发现重复记录 ID: " . ExistingID)
-            } else {
-                AddDebugLog("[WriteData1015] 未发现重复，准备新增")
             }
 
             if (StrLen(Content) > 1000000) {
@@ -727,7 +832,6 @@ WriteData1015() {
             EscapedBytes := StrReplace(Bytes, "'", "''")
             EscapedWindowDetail := StrReplace(WindowDetail, "'", "''")
             EscapedIdentifier := StrReplace(Identifier, "'", "''")
-            EscapedFormat := StrReplace(Format, "'", "''")
             EscapedRemark := StrReplace(Remark, "'", "''")
             EscapedContent := StrReplace(Content, "'", "''")
             EscapedGroup := StrReplace(Group, "'", "''")
@@ -737,22 +841,18 @@ WriteData1015() {
             Success := false
             RetryCount := 3
             LocalG_last_insert_rowid := ""
-            
+
+            ; ========== 关键修改：不再把 Format 写入主表类型字段 ==========
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '', 字节 = '" . EscapedBytes . "', 窗口详情 = '', 标识 = '', 类型 = '', 分组 = '', 应用名称 = '' WHERE ID = " . ExistingID . ";"
-                
-                AddDebugLog("[WriteData1015] 执行 UPDATE 主表 SQL")
-                
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '', 标识 = '', 类型 = '', 分组 = '" . EscapedGroup . "', 应用名称 = '" . EscapedAppName . "', 禁删 = 1 WHERE ID = " . ExistingID . ";"
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(UpdateSQL)) {
                         Success := true
                         FinalID := ExistingID
                         LocalG_last_insert_rowid := ExistingID
-                        AddDebugLog("[WriteData1015] UPDATE 主表成功，ID: " . ExistingID)
                         break
                     }
                     ErrorMsg := SQLiteDB._ErrMsg()
-                    AddDebugLog("[WriteData1015] UPDATE 主表失败: " . ErrorMsg)
                     if (InStr(ErrorMsg, "SQLITE_BUSY")) {
                         Sleep, 100
                         RetryCount--
@@ -762,7 +862,6 @@ WriteData1015() {
                 }
                 if (!Success) {
                     FailedCount++
-                    AddDebugLog("[WriteData1015] UPDATE 主表最终失败")
                     continue
                 }
 
@@ -787,27 +886,6 @@ WriteData1015() {
                     continue
                 }
 
-                DeletePropSQL := "DELETE FROM 数据收集_关联属性 WHERE ID = " . FinalID . ";"
-                RetryCount := 3
-                Success := false
-                while (RetryCount > 0) {
-                    if (SQLiteDB.Exec(DeletePropSQL)) {
-                        Success := true
-                        break
-                    }
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                    if (InStr(ErrorMsg, "SQLITE_BUSY")) {
-                        Sleep, 100
-                        RetryCount--
-                        continue
-                    }
-                    break
-                }
-                if (!Success) {
-                    FailedCount++
-                    continue
-                }
-
                 InsertDataSQL := "INSERT INTO Data_数据收集 (lParentID, strClipBoardFormat, ooData) VALUES (" . FinalID . ", 'CF_UNICODETEXT', '" . EscapedClipData . "');"
                 RetryCount := 3
                 Success := false
@@ -829,56 +907,29 @@ WriteData1015() {
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '', '', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '', '', '', 1);"
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '', '', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '" . EscapedGroup . "', '" . EscapedAppName . "', 1);"
                 RetryCount := 3
                 Success := false
-                
-                AddDebugLog("[WriteData1015] 执行 INSERT 主表 SQL")
-                
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(InsertMainSQL)) {
                         Success := true
-                        LastIDResult := {}
-                        if (SQLiteDB.GetTable("SELECT last_insert_rowid() AS newid;", LastIDResult) && LastIDResult.RowCount > 0) {
-                            FinalID := LastIDResult.Rows[1][1]
-                            LocalG_last_insert_rowid := FinalID
-                            AddDebugLog("[WriteData1015] INSERT 主表成功，新 ID: " . FinalID)
-                        } else {
-                            AddDebugLog("[WriteData1015] 获取 last_insert_rowid 失败")
-                            FinalID := ""
-                        }
+                        FinalID := SQLiteDB.LastInsertRowID
+                        LocalG_last_insert_rowid := FinalID
                         break
                     }
                     ErrorMsg := SQLiteDB._ErrMsg()
-                    AddDebugLog("[WriteData1015] INSERT 主表失败: " . ErrorMsg)
-                    if (InStr(ErrorMsg, "SQLITE_BUSY")) {
-                        Sleep, 100
+                    if (InStr(ErrorMsg, "UNIQUE constraint failed: 数据收集.排序")) {
+                        if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                            CurrentMax := MaxSortResult.Rows[1][1] + 0
+                        } else {
+                            CurrentMax := 0
+                        }
+                        NewSortValue := CurrentMax + 1
+                        InsertMainSQL := RegExReplace(InsertMainSQL, "排序 = \d+", "排序 = " . NewSortValue)
+                        Sleep, 50
                         RetryCount--
                         continue
                     }
-                    break
-                }
-                
-                if (!Success || FinalID = "" || FinalID <= 0) {
-                    FailedCount++
-                    AddDebugLog("[WriteData1015] INSERT 主表最终失败或 ID 无效")
-                    continue
-                }
-
-                InsertDataSQL := "INSERT INTO Data_数据收集 (lParentID, strClipBoardFormat, ooData) VALUES (" . FinalID . ", 'CF_UNICODETEXT', '" . EscapedClipData . "');"
-                RetryCount := 3
-                Success := false
-                
-                AddDebugLog("[WriteData1015] 插入 Data_数据收集，FinalID=" . FinalID . ", ooData 长度: " . StrLen(EscapedClipData))
-                
-                while (RetryCount > 0) {
-                    if (SQLiteDB.Exec(InsertDataSQL)) {
-                        Success := true
-                        AddDebugLog("[WriteData1015] 插入 Data 成功")
-                        break
-                    }
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                    AddDebugLog("[WriteData1015] 插入 Data 失败: " . ErrorMsg)
                     if (InStr(ErrorMsg, "SQLITE_BUSY")) {
                         Sleep, 100
                         RetryCount--
@@ -888,36 +939,40 @@ WriteData1015() {
                 }
                 if (!Success) {
                     FailedCount++
-                    AddDebugLog("[WriteData1015] 插入 Data 最终失败")
+                    continue
+                }
+
+                InsertDataSQL := "INSERT INTO Data_数据收集 (lParentID, strClipBoardFormat, ooData) VALUES (" . FinalID . ", 'CF_UNICODETEXT', '" . EscapedClipData . "');"
+                RetryCount := 3
+                Success := false
+                while (RetryCount > 0) {
+                    if (SQLiteDB.Exec(InsertDataSQL)) {
+                        Success := true
+                        break
+                    }
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    if (InStr(ErrorMsg, "SQLITE_BUSY")) {
+                        Sleep, 100
+                        RetryCount--
+                        continue
+                    }
+                    break
+                }
+                if (!Success) {
+                    FailedCount++
                     continue
                 }
             }
 
+            ; ========== 属性插入：处理 Format → 只保留用户可读部分作为“类型” ==========
             Attributes := []
             Attributes.Push({Format: "星级", Value: "0"})
-            
-            if (WindowDetail != "") {
-                Attributes.Push({Format: "窗口详情", Value: WindowDetail})
+            if (Tag != "") {
+                Attributes.Push({Format: "标签", Value: Tag})
             }
-            
-            if (Identifier != "") {
-                Attributes.Push({Format: "标识", Value: Identifier})
-            }
-            
-            if (Format != "") {
-                FormatParts := StrSplit(Format, ",")
-                Loop, % FormatParts.Length() {
-                    TypeValue := Trim(FormatParts[A_Index])
-                    if (TypeValue != "" && TypeValue != "CF_UNICODETEXT") {
-                        Attributes.Push({Format: "类型", Value: TypeValue})
-                    }
-                }
-            }
-            
             if (Group != "") {
                 Attributes.Push({Format: "分组", Value: Group})
             }
-            
             if (AppName != "" && AppName != "未知应用") {
                 Attributes.Push({Format: "应用名称", Value: AppName})
                 Tags := []
@@ -941,17 +996,24 @@ WriteData1015() {
                 }
                 for idx, t in Tags {
                     if (t != "" && t != "未知应用") {
-                        Attributes.Push({Format: "关键字", Value: t})
+                        Attributes.Push({Format: "标签", Value: t})
                     }
                 }
             }
-            
-            if (Tag != "") {
-                Attributes.Push({Format: "关键字", Value: Tag})
-                AddDebugLog("[WriteData1015] 添加泰文关键字: " . Tag)
+            if (Identifier != "") {
+                Attributes.Push({Format: "标识", Value: Identifier})
             }
 
-            AddDebugLog("[WriteData1015] 准备插入 " . Attributes.Length() . " 个属性")
+            ; **关键修改**：处理 Format → 拆分，只保留非 CF_ 部分作为“类型”
+            if (Format != "") {
+                FormatParts := StrSplit(Format, ",")
+                Loop, % FormatParts.Length() {
+                    TypeValue := Trim(FormatParts[A_Index])
+                    if (TypeValue != "" && SubStr(TypeValue, 1, 3) != "CF_") {
+                        Attributes.Push({Format: "类型", Value: TypeValue})
+                    }
+                }
+            }
 
             LocalAttrErrors := 0
             for idx, attr in Attributes {
@@ -959,18 +1021,13 @@ WriteData1015() {
                 ErrorMsg := Result.ErrorMsg
                 if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
                     LocalAttrErrors++
-                    AddDebugLog("[WriteData1015] 属性插入失败: " . attr.Format . " = " . attr.Value . ", 错误: " . ErrorMsg)
                     continue
-                } else {
-                    AddDebugLog("[WriteData1015] 属性插入成功: " . attr.Format . " = " . SubStr(attr.Value, 1, 50))
                 }
             }
 
             AttrCount := VerifyAllAttributes(FinalID, "数据收集")
             if (AttrCount < 0) {
-                AddDebugLog("[WriteData1015] 属性验证失败 for ID " . FinalID)
-            } else {
-                AddDebugLog("[WriteData1015] 属性验证通过，共 " . AttrCount . " 个属性")
+                ;
             }
 
             if (LocalG_last_insert_rowid != "") {
@@ -978,7 +1035,6 @@ WriteData1015() {
             }
 
             InsertedCount++
-            AddDebugLog("[WriteData1015] 成功处理行 " . index . "，ID: " . FinalID)
         }
 
         if (!CommitSafeTransaction("WriteData1015-Batch")) {
@@ -987,15 +1043,15 @@ WriteData1015() {
             Return
         }
 
-        AddDebugLog("[WriteData1015] 事务提交成功")
-
+        ; === 保存最后插入ID：Category_Main = Category_Sub = '最后插入ID' ===
         DeleteRecordSQL := "DELETE FROM ""分类字典_One"" WHERE ""Category_Main"" = '最后插入ID' AND ""Category_Sub"" = '最后插入ID';"
         SQLiteDB.Exec(DeleteRecordSQL)
 
         LastIDValue := (G_last_insert_rowid ? G_last_insert_rowid : "")
-        InsertRecordSQL := "INSERT OR REPLACE INTO ""分类字典_One"" "
+        InsertRecordSQL := "INSERT OR REPLACE INTO ""分类字典_One"" "       
                          . "(""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
                          . "VALUES ('最后插入ID', '最后插入ID', ?, 1, datetime('now','localtime'));"
+
         if (SQLiteDB.ExecuteWithParams) {
             SQLiteDB.ExecuteWithParams(InsertRecordSQL, [LastIDValue])
         } else {
@@ -1007,12 +1063,10 @@ WriteData1015() {
         }
 
         SB_SetText("WriteData1015: 批量插入完成，成功 " . InsertedCount . " 条" . (FailedCount > 0 ? "，失败 " . FailedCount . " 条" : ""))
-        AddDebugLog("[WriteData1015] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
     } catch e {
         eMessage := e.Message
         RollbackSafeTransaction("WriteData1015-Batch")
         MsgBox, 16, 错误, 错误 ID：4856558 WriteData1015 异常: %eMessage%
-        AddDebugLog("[WriteData1015] 异常: " . eMessage)
         SB_SetText("WriteData1015: 批量异常，失败 " . FailedCount . " 条")
     } finally {
         g_CurrentRecord.ID := G_last_insert_rowid
@@ -1026,11 +1080,10 @@ WriteData1015() {
             PostMessage, 0x0400 + 1, 0, 0, , ahk_class AutoHotkey
         }
         LoadData()
+        GetGlobalMaxSortValue()
         SaveDataTip()
         SetTimer, WatchDatabaseDir, 3000
     }
-    
-    AddDebugLog("[WriteData1015] 结束")
 }
 
 WriteData1016() {
@@ -1038,7 +1091,7 @@ WriteData1016() {
     AddDebugLog("[WriteData1016] 开始")
     ClipboardLock := 1
     ProcessingContext := "WriteData1016"
-    
+   
     WinGetTitle, WindowTitle, A
     if (RegExMatch(WindowTitle, "(.+?)\s*-\s*(.+)$", Match)) {
         AppName := Trim(Match2)
@@ -1046,12 +1099,11 @@ WriteData1016() {
         AppName := WindowTitle ? WindowTitle : "未知应用"
     }
     WindowDetail := WindowTitle ? WindowTitle : ""
-    Group := ""  ; 无分组
-    DataType := 1  ; 文本
+    Group := "" ; 无分组
+    DataType := 1 ; 文本
     Identifier := "" ; Identifier := "📄"
     Format := "CF_UNICODETEXT,文本"
-
-    FinalID := ""  ; 用于finally和分类字典_One（最后一个ID）
+    FinalID := "" ; 用于finally和分类字典_One（最后一个ID）
     InsertedCount := 0
     FailedCount := 0
     try {
@@ -1060,7 +1112,6 @@ WriteData1016() {
             AddDebugLog("[WriteData1016] 数据库被占用")
             Return
         }
-
         if (!SQLiteDB) {
             SQLiteDB := New SQLiteDB()
             if (!SQLiteDB.OpenDB(DBPath)) {
@@ -1070,7 +1121,6 @@ WriteData1016() {
                 Return
             }
         }
-
         ; 检查数据收集表和关联表存在（参考ClipboardChanged）
         CheckSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='数据收集';"
         CheckResult := {}
@@ -1091,7 +1141,6 @@ WriteData1016() {
             MsgBox, 16, 错误, 错误 ID：1929759 关联属性表不存在！
             Return
         }
-
         GetColumnsSQL := "PRAGMA table_info(数据收集);"
         ColumnsResult := {}
         RequiredFields := ["备注", "内容", "置顶", "置顶索引", "收藏", "禁删", "星级", "标签", "分组", "类型", "创建时间", "修改时间", "访问时间", "访问次数", "更新次数", "字节", "字符", "行数", "数量", "标识", "窗口详情", "应用名称", "哈希值", "排序", "标记状态"]
@@ -1116,16 +1165,12 @@ WriteData1016() {
             MsgBox, 16, 错误, 错误 ID：5158123 查询表结构失败: %ErrorMsg%
             Return
         }
-
-        Sleep, 100  ; 防卡顿，参考ClipboardChanged
-
+        Sleep, 100 ; 防卡顿，参考ClipboardChanged
         if (!BeginSafeTransaction("WriteData1016-Batch")) {
             MsgBox, 16, 错误, 错误 ID：1936036 开始批量事务失败！
             Return
         }
-
         AddDebugLog("[WriteData1016] ContentCache 总行数: " . ContentCache.MaxIndex())
-
         ; 处理ContentCache中的每对内容（偶数行合并处理，统一事务内）
         total := ContentCache.MaxIndex()
         Loop, % total//2 {
@@ -1133,9 +1178,9 @@ WriteData1016() {
             line1 := ContentCache[i]
             line2 := ContentCache[i+1]
             ClipData := line1 . line2
-            
+           
             AddDebugLog("[WriteData1016] 处理第 " . A_Index . " 对（行" . i . "+" . (i+1) . "），原始长度: " . StrLen(ClipData))
-            
+           
             ; 清理内容
             ClipData := RegExReplace(ClipData, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "")
             ClipData := Trim(ClipData)
@@ -1144,7 +1189,6 @@ WriteData1016() {
                 AddDebugLog("[WriteData1016] 第 " . A_Index . " 对跳过: 空内容或超长")
                 continue
             }
-
             ; 双语分离处理
             chineseText := ""
             nonChineseText := ""
@@ -1160,18 +1204,14 @@ WriteData1016() {
                 if (IsThai(char))
                     hasThai := true
             }
-
             AddDebugLog("[WriteData1016] 中文部分长度: " . StrLen(chineseText) . ", 非中文部分长度: " . StrLen(nonChineseText) . ", hasThai: " . hasThai)
-
             Remark := chineseText != "" ? chineseText : SubStr(nonChineseText, 1, 1000)
             Remark := RegExReplace(Remark, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ")
-            Content := ""
-
+            Content := nonChineseText ; 修改：将非中文部分也插入到主表内容字段
             if (hasThai) {
                 Tag := "泰文"
                 AddDebugLog("[WriteData1016] 检测到泰文，设置 Tag = 泰文")
             }
-
             ; 计算字节 (基于 nonChineseText)
             ByteCount := StrPut(nonChineseText, "UTF-8") - 1
             Bytes := ""
@@ -1185,7 +1225,6 @@ WriteData1016() {
                 else
                     Bytes := Round(ByteCount / (1024 * 1024 * 1024),2) . " GB"
             }
-
             try {
                 HashValue := Crypt.Hash.Str(nonChineseText, "SHA256")
                 AddDebugLog("[WriteData1016] 哈希值: " . SubStr(HashValue, 1, 16) . "...")
@@ -1196,22 +1235,75 @@ WriteData1016() {
                 FailedCount++
                 continue
             }
-
-            MaxSortSQL := "SELECT COALESCE(MAX(排序), 0) + 1 AS NewSort FROM 数据收集;"
+            ; ⭐ 修改：使用分类字典_One表维护排序最大值（带唯一性处理）
+            GetMaxSortSQL := "SELECT COALESCE(""Record_Value"", 0) FROM ""分类字典_One"" WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' LIMIT 1;"
             MaxSortResult := {}
-            NewSortValue := 1
-            if (!SQLiteDB.GetTable(MaxSortSQL, MaxSortResult)) {
-                ErrorMsg := SQLiteDB._ErrMsg()
-                MsgBox, 16, 错误, 错误 ID：1759036 获取最大排序值失败: %ErrorMsg%
-                FailedCount++
-                continue
+            CurrentMax := 0
+            if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                CurrentMax := MaxSortResult.Rows[1][1] + 0 ; 强制转为数字
+            } else {
+                ; 初始化
+                InitSQL := "INSERT OR IGNORE INTO ""分类字典_One"" (""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
+                         . "VALUES ('排序值', '最大值', '0', 0, datetime('now','localtime'));"
+                if (!SQLiteDB.Exec(InitSQL)) {
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    AddDebugLog("[WriteData1016] 排序初始化失败: " . ErrorMsg)
+                }
+                CurrentMax := 0
             }
-            if (MaxSortResult.RowCount > 0) {
-                NewSortValue := MaxSortResult.Rows[1][1]
+            ; 循环获取唯一排序值
+            Loop {
+                NewSortValue := CurrentMax + 1
+                ; 尝试更新最大值
+                UpdateMaxSQL := "UPDATE ""分类字典_One"" SET ""Record_Value"" = ?, ""Update_Time"" = datetime('now','localtime') "
+                              . "WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' AND ""Record_Value"" = ?;"
+                Success := false
+                RetryCount := 3
+                while (RetryCount > 0) {
+                    if (SQLiteDB.ExecuteWithParams) {
+                        if (SQLiteDB.ExecuteWithParams(UpdateMaxSQL, [NewSortValue, CurrentMax])) {
+                            Success := true
+                            break
+                        }
+                    } else {
+                        FallbackSQL := "UPDATE ""分类字典_One"" SET ""Record_Value"" = '" . NewSortValue . "', ""Update_Time"" = datetime('now','localtime') "
+                                     . "WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' AND ""Record_Value"" = '" . CurrentMax . "';"
+                        if (SQLiteDB.Exec(FallbackSQL)) {
+                            Success := true
+                            break
+                        }
+                    }
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    if (InStr(ErrorMsg, "SQLITE_BUSY")) {
+                        Sleep, 50
+                        RetryCount--
+                        continue
+                    }
+                    ; 新增：检查唯一约束失败
+                    if (InStr(ErrorMsg, "UNIQUE constraint failed")) {
+                        ; 重新读取（使用修复后的 SQL）
+                        if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                            CurrentMax := MaxSortResult.Rows[1][1] + 0
+                        } else {
+                            CurrentMax := 0
+                        }
+                        break ; 退出 while，重试外层 Loop
+                    }
+                    break
+                }
+                if (Success) {
+                    ; 更新成功，说明 NewSortValue 可用
+                    break
+                } else {
+                    ; 更新失败，说明有并发，重新读取当前最大值
+                    if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                        CurrentMax := MaxSortResult.Rows[1][1] + 0
+                    } else {
+                        CurrentMax := 0
+                    }
+                }
             }
-
             AddDebugLog("[WriteData1016] 新排序值: " . NewSortValue)
-
             ExistingID := ""
             CheckSQL := "SELECT ID FROM 数据收集 WHERE 哈希值 = ? LIMIT 1;"
             CheckResult := {}
@@ -1221,7 +1313,6 @@ WriteData1016() {
             } else {
                 AddDebugLog("[WriteData1016] 未发现重复，准备新增")
             }
-
             if (StrLen(Content) > 1000000) {
                 Content := SubStr(Content, 1, 1000000)
             }
@@ -1238,27 +1329,27 @@ WriteData1016() {
             Content := Content ? RegExReplace(Content, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
             Group := Group ? RegExReplace(Group, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
             AppName := AppName ? RegExReplace(AppName, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : "未知应用"
-
             EscapedHashValue := StrReplace(HashValue, "'", "''")
             EscapedBytes := StrReplace(Bytes, "'", "''")
             EscapedWindowDetail := StrReplace(WindowDetail, "'", "''")
             EscapedIdentifier := StrReplace(Identifier, "'", "''")
             EscapedFormat := StrReplace(Format, "'", "''")
             EscapedRemark := StrReplace(Remark, "'", "''")
-            EscapedContent := StrReplace(Content, "'", "''")
+            EscapedContent := StrReplace(Content, "'", "''")  ; ⭐ 统一使用 EscapedContent 插入主表内容
             EscapedGroup := StrReplace(Group, "'", "''")
             EscapedAppName := StrReplace(AppName, "'", "''")
             EscapedClipData := StrReplace(nonChineseText, "'", "''")
-
+            AddDebugLog("[WriteData1016] 准备插入到主表内容字段的长度: " . StrLen(EscapedContent))
+            AddDebugLog("[WriteData1016] 准备插入到 ooData 的内容长度: " . StrLen(EscapedClipData))
             Success := false
             RetryCount := 3
             LocalG_last_insert_rowid := ""
-            
+           
             if (ExistingID != "") {
-                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '', 字节 = '" . EscapedBytes . "', 窗口详情 = '', 标识 = '', 类型 = '', 分组 = '', 应用名称 = '' WHERE ID = " . ExistingID . ";"
-                
+                UpdateSQL := "UPDATE 数据收集 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '', 标识 = '', 类型 = '', 分组 = '', 应用名称 = '' WHERE ID = " . ExistingID . ";"
+               
                 AddDebugLog("[WriteData1016] 执行 UPDATE 主表 SQL")
-                
+               
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(UpdateSQL)) {
                         Success := true
@@ -1281,7 +1372,6 @@ WriteData1016() {
                     AddDebugLog("[WriteData1016] UPDATE 主表最终失败")
                     continue
                 }
-
                 DeleteDataSQL := "DELETE FROM Data_数据收集 WHERE lParentID = " . FinalID . ";"
                 RetryCount := 3
                 Success := false
@@ -1302,7 +1392,6 @@ WriteData1016() {
                     FailedCount++
                     continue
                 }
-
                 DeletePropSQL := "DELETE FROM 数据收集_关联属性 WHERE ID = " . FinalID . ";"
                 RetryCount := 3
                 Success := false
@@ -1323,7 +1412,6 @@ WriteData1016() {
                     FailedCount++
                     continue
                 }
-
                 InsertDataSQL := "INSERT INTO Data_数据收集 (lParentID, strClipBoardFormat, ooData) VALUES (" . FinalID . ", 'CF_UNICODETEXT', '" . EscapedClipData . "');"
                 RetryCount := 3
                 Success := false
@@ -1345,12 +1433,12 @@ WriteData1016() {
                     continue
                 }
             } else {
-                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '', '', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '', '', '', 1);"
+                InsertMainSQL := "INSERT INTO 数据收集 (哈希值, 字节, 窗口详情, 标识, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 禁删) VALUES ('" . EscapedHashValue . "', '" . EscapedBytes . "', '', '', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '', '', 1);"
                 RetryCount := 3
                 Success := false
-                
+               
                 AddDebugLog("[WriteData1016] 执行 INSERT 主表 SQL")
-                
+               
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(InsertMainSQL)) {
                         Success := true
@@ -1372,21 +1460,33 @@ WriteData1016() {
                         RetryCount--
                         continue
                     }
+                    if (InStr(ErrorMsg, "UNIQUE constraint failed: 数据收集.排序")) {
+                        ; 排序值冲突，重新获取
+                        if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
+                            CurrentMax := MaxSortResult.Rows[1][1] + 0
+                        } else {
+                            CurrentMax := 0
+                        }
+                        NewSortValue := CurrentMax + 1
+                        InsertMainSQL := RegExReplace(InsertMainSQL, "排序 = \d+", "排序 = " . NewSortValue)
+                        Sleep, 50
+                        RetryCount--
+                        continue
+                    }
                     break
                 }
-                
+               
                 if (!Success || FinalID = "" || FinalID <= 0) {
                     FailedCount++
                     AddDebugLog("[WriteData1016] INSERT 主表最终失败或 ID 无效")
                     continue
                 }
-
                 InsertDataSQL := "INSERT INTO Data_数据收集 (lParentID, strClipBoardFormat, ooData) VALUES (" . FinalID . ", 'CF_UNICODETEXT', '" . EscapedClipData . "');"
                 RetryCount := 3
                 Success := false
-                
+               
                 AddDebugLog("[WriteData1016] 插入 Data_数据收集，FinalID=" . FinalID . ", ooData 长度: " . StrLen(EscapedClipData))
-                
+               
                 while (RetryCount > 0) {
                     if (SQLiteDB.Exec(InsertDataSQL)) {
                         Success := true
@@ -1408,37 +1508,36 @@ WriteData1016() {
                     continue
                 }
             }
-
             ; 属性插入 (加Tag，参考ClipboardChanged，用DataID)
             Attributes := []
             Attributes.Push({Format: "星级", Value: "0"})
-            
+           
             ; 添加窗口详情
             if (WindowDetail != "") {
                 Attributes.Push({Format: "窗口详情", Value: WindowDetail})
             }
-            
+           
             ; 添加标识
             if (Identifier != "") {
                 Attributes.Push({Format: "标识", Value: Identifier})
             }
-            
+           
             ; 添加类型（拆分Format字符串）
             if (Format != "") {
                 FormatParts := StrSplit(Format, ",")
                 Loop, % FormatParts.Length() {
                     TypeValue := Trim(FormatParts[A_Index])
-                    if (TypeValue != "" && TypeValue != "CF_UNICODETEXT") {  ; 过滤系统前缀
+                    if (TypeValue != "" && TypeValue != "CF_UNICODETEXT") { ; 过滤系统前缀
                         Attributes.Push({Format: "类型", Value: TypeValue})
                     }
                 }
             }
-            
+           
             ; 添加分组
             if (Group != "") {
                 Attributes.Push({Format: "分组", Value: Group})
             }
-            
+           
             ; 添加应用名称（并拆分标签）
             if (AppName != "" && AppName != "未知应用") {
                 Attributes.Push({Format: "应用名称", Value: AppName})
@@ -1467,23 +1566,21 @@ WriteData1016() {
                     }
                 }
             }
-            
+           
             ; 现有标签（如泰文）
             if (Tag != "") {
                 Attributes.Push({Format: "关键字", Value: Tag})
                 AddDebugLog("[WriteData1016] 添加泰文关键字: " . Tag)
             }
-
             AddDebugLog("[WriteData1016] 准备插入 " . Attributes.Length() . " 个属性")
-
             LocalAttrErrors := 0
             for idx, attr in Attributes {
-                Result := InsertAttribute("数据收集", FinalID, attr.Format, attr.Value)  ; 添加 TableName 参数
+                Result := InsertAttribute("数据收集", FinalID, attr.Format, attr.Value) ; 添加 TableName 参数
                 ErrorMsg := Result.ErrorMsg
                 if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
                     LocalAttrErrors++
                     AddDebugLog("[WriteData1016] 属性插入失败: " . attr.Format . " = " . attr.Value . ", 错误: " . ErrorMsg)
-                    continue  ; 单个属性失败不中断整体
+                    continue ; 单个属性失败不中断整体
                 } else {
                     AddDebugLog("[WriteData1016] 属性插入成功: " . attr.Format . " = " . SubStr(attr.Value, 1, 50))
                 }
@@ -1491,33 +1588,27 @@ WriteData1016() {
             if (LocalAttrErrors > 0) {
                 AddDebugLog("[WriteData1016] 属性插入警告: " . LocalAttrErrors . " 个失败 for ID " . FinalID)
             }
-
             ; 验证属性（用ID）
-            AttrCount := VerifyAllAttributes(FinalID, "数据收集")  ; 调整为ID + 表名
+            AttrCount := VerifyAllAttributes(FinalID, "数据收集") ; 调整为ID + 表名
             if (AttrCount < 0) {
                 AddDebugLog("[WriteData1016] 属性验证失败 for ID " . FinalID)
             } else {
                 AddDebugLog("[WriteData1016] 属性验证通过，共 " . AttrCount . " 个属性")
             }
-
             ; 更新全局ID（当前行）
             if (LocalG_last_insert_rowid != "") {
                 G_last_insert_rowid := LocalG_last_insert_rowid
             }
-
             InsertedCount++
             AddDebugLog("[WriteData1016] 成功处理对 " . A_Index . "，ID: " . FinalID)
         }
-
         ; 统一提交事务（参考TogglePinned批量）
         if (!CommitSafeTransaction("WriteData1016-Batch")) {
             RollbackSafeTransaction("WriteData1016-Batch")
             MsgBox, 16, 错误, 错误 ID：4344295 批量事务提交失败！成功 %InsertedCount% 条，失败 %FailedCount% 条
             Return
         }
-
         AddDebugLog("[WriteData1016] 事务提交成功")
-
         ; 分类字典_One（最后插入ID为最后一个FinalID）
         DeleteRecordSQL := "DELETE FROM 分类字典_One WHERE Category_Main = '最后插入ID';"
         if (!SQLiteDB.Exec(DeleteRecordSQL)) {
@@ -1525,14 +1616,12 @@ WriteData1016() {
             MsgBox, 16, 错误, 错误 ID：7291456 删除分类字典_One失败: %ErrorMsg%
             Return
         }
-
         InsertRecordSQL := "INSERT OR REPLACE INTO 分类字典_One (Category_Main, Category_Sub, Record_Value) VALUES ('最后插入ID', '', " . (FinalID ? FinalID : "NULL") . ");"
         if (!SQLiteDB.Exec(InsertRecordSQL)) {
             ErrorMsg := SQLiteDB._ErrMsg()
             MsgBox, 16, 错误, 错误 ID：8592666 插入分类字典_One失败: %ErrorMsg%
             Return
         }
-
         SB_SetText("WriteData1016: 批量插入完成，成功 " . InsertedCount . " 条" . (FailedCount > 0 ? "，失败 " . FailedCount . " 条" : ""))
         AddDebugLog("[WriteData1016] 批量完成: 成功 " . InsertedCount . "，失败 " . FailedCount)
     } catch e {
@@ -1545,7 +1634,6 @@ WriteData1016() {
         ; 缓存当前记录（最后一个）
         g_CurrentRecord.ID := G_last_insert_rowid
         g_CurrentRecord.TableName := "数据收集"
-
         ; 持久化CurrentRecord（重试，参考ClipboardChanged，简化）
         RetryPersist := 2
         while (RetryPersist > 0) {
@@ -1560,19 +1648,18 @@ WriteData1016() {
             Sleep, 50
             RetryPersist--
         }
-
         SB_SetText("WriteData1016: 填充缓存 ID=" . SubStr(FinalID, 1, 8) . "..." . (InsertedCount > 0 ? " (成功 " . InsertedCount . ")" : ""))
-
         ProcessingContext := ""
         if (ClipboardLock = 1) {
             ClipboardLock := 0
             PostMessage, 0x0400 + 1, 0, 0, , ahk_class AutoHotkey
         }
         LoadData()
+        GetGlobalMaxSortValue()  ; ⭐ 添加：任务结束时更新全局最大排序值
         SaveDataTip()
         SetTimer, WatchDatabaseDir, 3000
     }
-    
+   
     AddDebugLog("[WriteData1016] 结束")
 }
 
@@ -2069,7 +2156,7 @@ ClipboardChanged(type) {
             if (!SQLiteDB.Exec(InitSQL)) {
                 ErrorMsg := SQLiteDB._ErrMsg()
                 RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：新ID-排序初始化失败: %ErrorMsg%
+                MsgBox, 16, 错误, 错误 ID：3646934 新ID-排序初始化失败: %ErrorMsg%
                 LoadData()
                 Return
             }
