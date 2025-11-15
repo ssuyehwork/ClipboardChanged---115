@@ -1,22 +1,23 @@
+; ===========================================
+; 完整修复版本 - 文件监听系统
+; ===========================================
+
 ; 定义全局变量
 Global IsCopying, ClipboardLock, retryCount, textData, GlobalFileList, SQLiteDB, DBPath, ProcessingContext
+Global TransactionActive := false
+Global TransactionOwner := ""
 
 ; 初始化全局重试计数
 retryCount := 0
 textData := ""
 ProcessingContext := ""
 
-; 记录文件夹和文件状态（路径 -> {文件数量, 最后修改时间, 总大小}）
+; 记录文件夹和文件状态
 FolderStates := {}
 
 ; ===========================================
-; 事务管理器 - 解决嵌套事务冲突
+; 主监听函数
 ; ===========================================
-
-; 全局事务状态变量
-Global TransactionActive := false
-Global TransactionOwner := ""
-
 WatchDatabaseDir:
     Global SQLiteDB, DBPath, ProcessingContext, TransactionActive, TransactionOwner, FolderStates
     ProcessingContext := "WatchDir"
@@ -38,15 +39,26 @@ WatchDatabaseDir:
     }
     
     try {
-        ; 确保注册登记路径表存在
-        CreateTableSQL := "CREATE TABLE IF NOT EXISTS 注册登记路径 (id INTEGER PRIMARY KEY AUTOINCREMENT, 标识 TEXT, 文件夹或文件名称 TEXT, 路径 TEXT NOT NULL UNIQUE, 文件夹大小 TEXT, 详细资料 TEXT DEFAULT '', 文件数量 INTEGER, 访问时间 DATETIME DEFAULT (datetime('now', 'localtime')));"
-        if (!SQLiteDB.Exec(CreateTableSQL)) {
-            ErrorMsg := SQLiteDB._ErrMsg()
-            MsgBox, 16, 错误, 错误 ID：212116 创建注册登记路径表失败: %ErrorMsg%
-            ProcessingContext := ""
-            Return
+        ; === 先检查注册登记路径表的结构 ===
+        CheckTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='注册登记路径';"
+        CheckTableResult := {}
+        TableExists := false
+        if (SQLiteDB.GetTable(CheckTableSQL, CheckTableResult) && CheckTableResult.RowCount > 0) {
+            TableExists := true
         }
         
+        ; 确保注册登记路径表存在（修复：使用 Local_ID）
+        if (!TableExists) {
+            CreateTableSQL := "CREATE TABLE IF NOT EXISTS 注册登记路径 (Local_ID INTEGER PRIMARY KEY AUTOINCREMENT, 标识 TEXT, 文件夹或文件名称 TEXT, 路径 TEXT NOT NULL UNIQUE, 文件夹大小 TEXT, 详细资料 TEXT DEFAULT '', 文件数量 INTEGER, 访问时间 DATETIME DEFAULT (datetime('now', 'localtime')));"
+            if (!SQLiteDB.Exec(CreateTableSQL)) {
+                ErrorMsg := SQLiteDB._ErrMsg()
+                MsgBox, 16, 错误, 错误 ID：212116 创建注册登记路径表失败: %ErrorMsg%
+                ProcessingContext := ""
+                Return
+            }
+        }
+        
+        ; 检查Database表
         CheckSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='Database';"
         CheckResult := {}
         if (!SQLiteDB.GetTable(CheckSQL, CheckResult) || CheckResult.RowCount = 0) {
@@ -55,36 +67,33 @@ WatchDatabaseDir:
             Return
         }
         
-        GetColumnsSQL := "PRAGMA table_info(Database);"
-        ColumnsResult := {}
-        RequiredFields := ["ID", "备注", "内容", "哈希值", "字节", "字符", "行数", "数量", "收藏", "禁删", "创建时间", "修改时间", "标识"]
-        MissingFields := []
-        if (SQLiteDB.GetTable(GetColumnsSQL, ColumnsResult)) {
-            ExistingColumns := []
-            Loop, % ColumnsResult.RowCount {
-                ExistingColumns.Push(ColumnsResult.Rows[A_Index][2])
-            }
-            for index, field in RequiredFields {
-                if (!ArrayContains(ExistingColumns, field)) {
-                    MissingFields.Push(field)
-                }
-            }
-            if (MissingFields.Length() > 0) {
-                MissingList := Join(MissingFields, ", ")
-                MsgBox, 16, 错误, 错误 ID：212115 Database表缺少必要字段: %MissingList%
-                ProcessingContext := ""
-                Return
-            }
-        } else {
-            ErrorMsg := SQLiteDB._ErrMsg()
-            MsgBox, 16, 错误, 错误 ID：212112 查询Database表结构失败: %ErrorMsg%
-            ProcessingContext := ""
-            Return
-        }
-        
+        ; 构建监听目录列表
         dirList := []
         dirList.Push(A_ScriptDir . "\Database")
         
+        ; === 从分类字典_One表读取监听文件夹（主要方式）===
+        sqlMonitorFolders := "SELECT Category_Sub FROM 分类字典_One WHERE Category_Main = '监听文件夹' AND Flag_Status = 1;"
+        ResultMonitor := {}
+        if (SQLiteDB.GetTable(sqlMonitorFolders, ResultMonitor) && ResultMonitor.RowCount >= 1) {
+            Loop, % ResultMonitor.RowCount {
+                folderPath := ResultMonitor.Rows[A_Index][1]
+                if (folderPath = "") {
+                    continue
+                }
+                found := false
+                for index, dir in dirList {
+                    if (dir = folderPath) {
+                        found := true
+                        break
+                    }
+                }
+                if (!found && FileExist(folderPath)) {
+                    dirList.Push(folderPath)
+                }
+            }
+        }
+        
+        ; === 兼容旧的属性表（如果还在使用）===
         sqlFolders := "SELECT 属性值 FROM 属性 WHERE 属性格式 = '文件夹路径';"
         ResultFolders := {}
         if (SQLiteDB.GetTable(sqlFolders, ResultFolders) && ResultFolders.RowCount >= 1) {
@@ -103,16 +112,21 @@ WatchDatabaseDir:
             }
         }
         
+        ; 处理所有监听目录
         for dirIndex, dirPath in dirList {
             if (!FileExist(dirPath)) {
                 continue
             }
+            
+            ; 处理子文件夹
             Loop, Files, %dirPath%\*, D R
             {
                 item := A_LoopFileFullPath
                 SB_SetText("正在处理子文件夹: " . item)
                 ProcessSingleFolder(item)
             }
+            
+            ; 处理直属文件
             Loop, Files, %dirPath%\*, F
             {
                 item := A_LoopFileFullPath
@@ -139,6 +153,282 @@ WatchDatabaseDir:
         ProcessingContext := ""
     }
 Return
+
+; ===========================================
+; 处理单个文件夹
+; ===========================================
+ProcessSingleFolder(folderPath) {
+    Global SQLiteDB, FolderStates, ProcessingContext
+    
+    if (!SQLiteDB) {
+        MsgBox, 16, 错误, 错误 ID：717798 数据库连接未初始化
+        Return false
+    }
+    
+    if (!FileExist(folderPath) || !InStr(FileExist(folderPath), "D")) {
+        Return false
+    }
+    
+    folderState := GetFolderState(folderPath)
+    SplitPath, folderPath, folderName
+    sizeText := FormatSize(folderState.totalSize)
+    
+    if (ProcessingContext = "WatchDir") {
+        transactionStarted := BeginSafeTransaction("ProcessSingleFolder")
+        if (!transactionStarted) {
+            MsgBox, 16, 错误, 错误 ID：212610 事务开始失败
+            Return false
+        }
+        
+        try {
+            ; 检查文件夹路径是否已登记
+            CheckFolderSQL := "SELECT Local_ID FROM 注册登记路径 WHERE 路径 = ?;"
+            CheckFolderResult := {}
+            if (!SQLiteDB.GetTable(CheckFolderSQL, CheckFolderResult, [folderPath])) {
+                ErrorMsg := SQLiteDB._ErrMsg()
+                MsgBox, 16, 错误, 错误 ID：212611 查询文件夹失败: %ErrorMsg%
+                RollbackSafeTransaction("ProcessSingleFolder")
+                Return false
+            }
+            
+            if (CheckFolderResult.RowCount = 0) {
+                ; === 路径未登记，需要处理 ===
+                
+                ; 1. 先登记路径（Local_ID 自增，不需要手动指定）
+                InsertFolderSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'));"
+                InsertSuccess := false
+                if (SQLiteDB.ExecuteWithParams) {
+                    InsertSuccess := SQLiteDB.ExecuteWithParams(InsertFolderSQL, ["📁", folderName, folderPath, sizeText, folderState.fileList, folderState.fileCount])
+                } else {
+                    EscapedFolderName := StrReplace(folderName, "'", "''")
+                    EscapedFolderPath := StrReplace(folderPath, "'", "''")
+                    EscapedSizeText := StrReplace(sizeText, "'", "''")
+                    EscapedFileList := StrReplace(folderState.fileList, "'", "''")
+                    FallbackSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES ('📁', '" . EscapedFolderName . "', '" . EscapedFolderPath . "', '" . EscapedSizeText . "', '" . EscapedFileList . "', " . folderState.fileCount . ", datetime('now', 'localtime'));"
+                    InsertSuccess := SQLiteDB.Exec(FallbackSQL)
+                }
+                
+                if (!InsertSuccess) {
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    MsgBox, 16, 错误, 错误 ID：212630 登记文件夹失败: %ErrorMsg%
+                    RollbackSafeTransaction("ProcessSingleFolder")
+                    Return false
+                }
+                
+                ; 2. 保存状态
+                FolderStates[folderPath] := folderState
+                
+                ; 3. 同步到Database主表（这才是真正的数据）
+                GlobalFileList := folderPath
+                GlobalComment := folderName
+                if (Gosub_SavePathMerged_Success()) {
+                    FolderStates[folderPath].processedTime := A_Now
+                }
+                
+            } else {
+                ; === 路径已登记，只更新登记表的元数据 ===
+                needsUpdate := false
+                if (!FolderStates.HasKey(folderPath)) {
+                    needsUpdate := true
+                } else {
+                    oldState := FolderStates[folderPath]
+                    if (folderState.fileCount != oldState.fileCount || folderState.totalSize != oldState.totalSize || folderState.lastModified != oldState.lastModified) {
+                        needsUpdate := true
+                    }
+                }
+                
+                if (needsUpdate) {
+                    UpdateFolderSQL := "UPDATE 注册登记路径 SET 标识 = ?, 文件夹或文件名称 = ?, 文件夹大小 = ?, 详细资料 = ?, 文件数量 = ?, 访问时间 = datetime('now', 'localtime') WHERE 路径 = ?;"
+                    UpdateSuccess := false
+                    if (SQLiteDB.ExecuteWithParams) {
+                        UpdateSuccess := SQLiteDB.ExecuteWithParams(UpdateFolderSQL, ["📁", folderName, sizeText, folderState.fileList, folderState.fileCount, folderPath])
+                    } else {
+                        EscapedFolderName := StrReplace(folderName, "'", "''")
+                        EscapedSizeText := StrReplace(sizeText, "'", "''")
+                        EscapedFileList := StrReplace(folderState.fileList, "'", "''")
+                        EscapedFolderPath := StrReplace(folderPath, "'", "''")
+                        FallbackSQL := "UPDATE 注册登记路径 SET 标识 = '📁', 文件夹或文件名称 = '" . EscapedFolderName . "', 文件夹大小 = '" . EscapedSizeText . "', 详细资料 = '" . EscapedFileList . "', 文件数量 = " . folderState.fileCount . ", 访问时间 = datetime('now', 'localtime') WHERE 路径 = '" . EscapedFolderPath . "';"
+                        UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
+                    }
+                    
+                    if (!UpdateSuccess) {
+                        ErrorMsg := SQLiteDB._ErrMsg()
+                        MsgBox, 16, 错误, 错误 ID：212660 更新文件夹登记失败: %ErrorMsg%
+                        RollbackSafeTransaction("ProcessSingleFolder")
+                        Return false
+                    }
+                    
+                    FolderStates[folderPath] := folderState
+                }
+                ; 注意：已登记的路径不再同步到Database表，避免重复插入
+            }
+            
+            if (!CommitSafeTransaction("ProcessSingleFolder")) {
+                ErrorMsg := SQLiteDB._ErrMsg()
+                MsgBox, 16, 错误, 错误 ID：212640 提交事务失败: %ErrorMsg%
+                RollbackSafeTransaction("ProcessSingleFolder")
+                Return false
+            }
+        } catch e {
+            ErrorMsg := e.Message
+            MsgBox, 16, 错误, 错误 ID：212641 ProcessSingleFolder异常: %ErrorMsg%
+            RollbackSafeTransaction("ProcessSingleFolder")
+            Return false
+        }
+    } else if (ProcessingContext = "Clipboard") {
+        ProcessFolderToHistoryTable(folderPath)
+    }
+    
+    Return true
+}
+
+; ===========================================
+; 处理单个文件
+; ===========================================
+ProcessSingleFile(filePath) {
+    Global SQLiteDB, DBPath, FolderStates, ProcessingContext
+    
+    if (!FileExist(filePath) || InStr(FileExist(filePath), "D")) {
+        Return false
+    }
+    
+    if (!CheckDBUnlocked(DBPath)) {
+        MsgBox, 16, 错误, 错误 ID：212505 数据库被锁定
+        Return false
+    }
+    
+    if (!SQLiteDB) {
+        SQLiteDB := New SQLiteDB()
+        if (!SQLiteDB.OpenDB(DBPath)) {
+            ErrorMsg := SQLiteDB._ErrMsg()
+            MsgBox, 16, 错误, 错误 ID：4122461 打开数据库失败: %ErrorMsg%
+            Return false
+        }
+    }
+    
+    FileGetSize, fileSize, %filePath%
+    FileGetTime, fileTime, %filePath%, M
+    SplitPath, filePath, fileName, , fileExt
+    
+    Identifier := GetFileTypeSymbol(filePath, fileExt)
+    sizeText := FormatSize(fileSize)
+    
+    try {
+        if (ProcessingContext = "WatchDir") {
+            transactionStarted := BeginSafeTransaction("ProcessSingleFile")
+            if (!transactionStarted) {
+                MsgBox, 16, 错误, 错误 ID：212510 事务开始失败
+                Return false
+            }
+            
+            try {
+                ; 检查文件路径是否已登记
+                CheckFileSQL := "SELECT Local_ID FROM 注册登记路径 WHERE 路径 = ?;"
+                CheckFileResult := {}
+                if (!SQLiteDB.GetTable(CheckFileSQL, CheckFileResult, [filePath])) {
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    MsgBox, 16, 错误, 错误 ID：212511 查询文件失败: %ErrorMsg%
+                    RollbackSafeTransaction("ProcessSingleFile")
+                    Return false
+                }
+                
+                if (CheckFileResult.RowCount = 0) {
+                    ; === 路径未登记，需要处理 ===
+                    
+                    ; 1. 先登记路径（Local_ID 自增，不需要手动指定）
+                    InsertFileSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'));"
+                    InsertSuccess := false
+                    if (SQLiteDB.ExecuteWithParams) {
+                        InsertSuccess := SQLiteDB.ExecuteWithParams(InsertFileSQL, [Identifier, fileName, filePath, sizeText, filePath, 1])
+                    } else {
+                        EscapedIdentifier := StrReplace(Identifier, "'", "''")
+                        EscapedFileName := StrReplace(fileName, "'", "''")
+                        EscapedFilePath := StrReplace(filePath, "'", "''")
+                        EscapedSizeText := StrReplace(sizeText, "'", "''")
+                        FallbackSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES ('" . EscapedIdentifier . "', '" . EscapedFileName . "', '" . EscapedFilePath . "', '" . EscapedSizeText . "', '" . EscapedFilePath . "', 1, datetime('now', 'localtime'));"
+                        InsertSuccess := SQLiteDB.Exec(FallbackSQL)
+                    }
+                    
+                    if (!InsertSuccess) {
+                        ErrorMsg := SQLiteDB._ErrMsg()
+                        MsgBox, 16, 错误, 错误 ID：212530 登记文件失败: %ErrorMsg%
+                        RollbackSafeTransaction("ProcessSingleFile")
+                        Return false
+                    }
+                    
+                    ; 2. 保存状态
+                    FolderStates[filePath] := {totalSize: fileSize, lastModified: fileTime, fileCount: 1, fileList: filePath}
+                    
+                    ; 3. 同步到Database主表（这才是真正的数据）
+                    ProcessFileToDatabase(filePath, fileName, fileExt, fileSize)
+                    
+                } else {
+                    ; === 路径已登记，只更新登记表的元数据 ===
+                    needsUpdate := false
+                    if (!FolderStates.HasKey(filePath)) {
+                        needsUpdate := true
+                    } else {
+                        oldState := FolderStates[filePath]
+                        if (fileSize != oldState.totalSize || fileTime != oldState.lastModified) {
+                            needsUpdate := true
+                        }
+                    }
+                    
+                    if (needsUpdate) {
+                        UpdateFileSQL := "UPDATE 注册登记路径 SET 标识 = ?, 文件夹或文件名称 = ?, 文件夹大小 = ?, 详细资料 = ?, 文件数量 = 1, 访问时间 = datetime('now', 'localtime') WHERE 路径 = ?;"
+                        UpdateSuccess := false
+                        if (SQLiteDB.ExecuteWithParams) {
+                            UpdateSuccess := SQLiteDB.ExecuteWithParams(UpdateFileSQL, [Identifier, fileName, sizeText, filePath, filePath])
+                        } else {
+                            EscapedIdentifier := StrReplace(Identifier, "'", "''")
+                            EscapedFileName := StrReplace(fileName, "'", "''")
+                            EscapedSizeText := StrReplace(sizeText, "'", "''")
+                            EscapedFilePath := StrReplace(filePath, "'", "''")
+                            FallbackSQL := "UPDATE 注册登记路径 SET 标识 = '" . EscapedIdentifier . "', 文件夹或文件名称 = '" . EscapedFileName . "', 文件夹大小 = '" . EscapedSizeText . "', 详细资料 = '" . EscapedFilePath . "', 文件数量 = 1, 访问时间 = datetime('now', 'localtime') WHERE 路径 = '" . EscapedFilePath . "';"
+                            UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
+                        }
+                        
+                        if (!UpdateSuccess) {
+                            ErrorMsg := SQLiteDB._ErrMsg()
+                            MsgBox, 16, 错误, 错误 ID：212560 更新文件登记失败: %ErrorMsg%
+                            RollbackSafeTransaction("ProcessSingleFile")
+                            Return false
+                        }
+                        
+                        FolderStates[filePath] := {totalSize: fileSize, lastModified: fileTime, fileCount: 1, fileList: filePath}
+                    }
+                    ; 注意：已登记的路径不再同步到Database表，避免重复插入
+                }
+                
+                if (!CommitSafeTransaction("ProcessSingleFile")) {
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    MsgBox, 16, 错误, 错误 ID：212540 提交事务失败: %ErrorMsg%
+                    RollbackSafeTransaction("ProcessSingleFile")
+                    Return false
+                }
+            } catch e {
+                ErrorMsg := e.Message
+                MsgBox, 16, 错误, 错误 ID：212541 ProcessSingleFile异常: %ErrorMsg%
+                RollbackSafeTransaction("ProcessSingleFile")
+                Return false
+            }
+        } else if (ProcessingContext = "Clipboard") {
+            ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize)
+        }
+    } catch e {
+        eMessage := e.Message
+        MsgBox, 16, 错误, 错误 ID：212580 ProcessSingleFile异常: %eMessage%
+        if (TransactionActive && TransactionOwner = "ProcessSingleFile") {
+            RollbackSafeTransaction("ProcessSingleFile")
+        }
+        Return false
+    }
+    Return true
+}
+
+; ===========================================
+; 辅助函数
+; ===========================================
 
 RegisterAndValidateFolders() {
     Global SQLiteDB
@@ -177,265 +467,56 @@ RegisterAndValidateFolders() {
             }
         }
     } catch e {
-		 eMessage := e.Message
+        eMessage := e.Message
         MsgBox, 16, 错误, 错误 ID：212119 RegisterAndValidateFolders异常: %eMessage%
     }
 }
 
-ProcessSingleFolder(folderPath) {
-    Global SQLiteDB, FolderStates, ProcessingContext
+GetFolderState(folderPath) {
+    state := {}
+    state.fileCount := 0
+    state.totalSize := 0
+    state.lastModified := 0
+    state.fileList := ""
     
-    if (!SQLiteDB) {
-        MsgBox, 16, 错误, 错误 ID：717798 数据库连接未初始化
-        Return false
-    }
-    
-    if (!FileExist(folderPath) || !InStr(FileExist(folderPath), "D")) {
-        Return false
-    }
-    
-    TestSQL := "SELECT 1;"
-    TestResult := {}
-    if (!SQLiteDB.GetTable(TestSQL, TestResult)) {
-        ErrorMsg := SQLiteDB._ErrMsg()
-        MsgBox, 16, 错误, 错误 ID：343470 数据库连接异常: %ErrorMsg%
-        Return false
-    }
-    
-    folderState := GetFolderState(folderPath)
-    SplitPath, folderPath, folderName
-    sizeText := FormatSize(folderState.totalSize)
-    
-    if (ProcessingContext = "WatchDir") {
-        transactionStarted := BeginSafeTransaction("ProcessSingleFolder")
-        if (!transactionStarted) {
-            MsgBox, 16, 错误, 错误 ID：212610 事务开始失败
-            Return false
-        }
-        
-        try {
-            CheckFolderSQL := "SELECT id FROM 注册登记路径 WHERE 路径 = ?;"
-            CheckFolderResult := {}
-            if (!SQLiteDB.GetTable(CheckFolderSQL, CheckFolderResult, [folderPath])) {
-                ErrorMsg := SQLiteDB._ErrMsg()
-                MsgBox, 16, 错误, 错误 ID：212611 查询文件夹失败: %ErrorMsg%
-                RollbackSafeTransaction("ProcessSingleFolder")
-                Return false
+    Loop, Files, %folderPath%\*, F
+    {
+        filePath := A_LoopFileFullPath
+        if (FileExist(filePath) && !InStr(FileExist(filePath), "D")) {
+            state.fileList .= (state.fileList = "" ? "" : "`n") . filePath
+            state.fileCount++
+            
+            FileGetSize, fileSize, %filePath%
+            if (fileSize != "") {
+                state.totalSize += fileSize
             }
             
-            if (CheckFolderResult.RowCount = 0) {
-                InsertFolderSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'));"
-                InsertSuccess := false
-                if (SQLiteDB.ExecuteWithParams) {
-                    InsertSuccess := SQLiteDB.ExecuteWithParams(InsertFolderSQL, ["📁", folderName, folderPath, sizeText, folderState.fileList, folderState.fileCount])
-                } else {
-                    EscapedFolderName := StrReplace(folderName, "'", "''")
-                    EscapedFolderPath := StrReplace(folderPath, "'", "''")
-                    EscapedSizeText := StrReplace(sizeText, "'", "''")
-                    EscapedFileList := StrReplace(folderState.fileList, "'", "''")
-                    FallbackSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES ('📁', '" . EscapedFolderName . "', '" . EscapedFolderPath . "', '" . EscapedSizeText . "', '" . EscapedFileList . "', " . folderState.fileCount . ", datetime('now', 'localtime'));"
-                    InsertSuccess := SQLiteDB.Exec(FallbackSQL)
-                }
-                
-                if (!InsertSuccess) {
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                    MsgBox, 16, 错误, 错误 ID：212630 插入文件夹失败: %ErrorMsg%
-                    RollbackSafeTransaction("ProcessSingleFolder")
-                    Return false
-                }
-            } else {
-                needsUpdate := false
-                if (!FolderStates.HasKey(folderPath)) {
-                    needsUpdate := true
-                } else {
-                    oldState := FolderStates[folderPath]
-                    if (folderState.fileCount != oldState.fileCount || folderState.totalSize != oldState.totalSize || folderState.lastModified != oldState.lastModified) {
-                        needsUpdate := true
-                    }
-                }
-                
-                if (needsUpdate) {
-                    UpdateFolderSQL := "UPDATE 注册登记路径 SET 标识 = ?, 文件夹或文件名称 = ?, 文件夹大小 = ?, 详细资料 = ?, 文件数量 = ?, 访问时间 = datetime('now', 'localtime') WHERE 路径 = ?;"
-                    UpdateSuccess := false
-                    if (SQLiteDB.ExecuteWithParams) {
-                        UpdateSuccess := SQLiteDB.ExecuteWithParams(UpdateFolderSQL, ["📁", folderName, sizeText, folderState.fileList, folderState.fileCount, folderPath])
-                    } else {
-                        EscapedFolderName := StrReplace(folderName, "'", "''")
-                        EscapedSizeText := StrReplace(sizeText, "'", "''")
-                        EscapedFileList := StrReplace(folderState.fileList, "'", "''")
-                        EscapedFolderPath := StrReplace(folderPath, "'", "''")
-                        FallbackSQL := "UPDATE 注册登记路径 SET 标识 = '📁', 文件夹或文件名称 = '" . EscapedFolderName . "', 文件夹大小 = '" . EscapedSizeText . "', 详细资料 = '" . EscapedFileList . "', 文件数量 = " . folderState.fileCount . ", 访问时间 = datetime('now', 'localtime') WHERE 路径 = '" . EscapedFolderPath . "';"
-                        UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
-                    }
-                    
-                    if (!UpdateSuccess) {
-                        ErrorMsg := SQLiteDB._ErrMsg()
-                        MsgBox, 16, 错误, 错误 ID：212660 更新文件夹失败: %ErrorMsg%
-                        RollbackSafeTransaction("ProcessSingleFolder")
-                        Return false
-                    }
-                    
-                    FolderStates[folderPath] := folderState
-                    
-                    GlobalFileList := folderPath
-                    GlobalComment := folderName
-                    if (Gosub_SavePathMerged_Success()) {
-                        FolderStates[folderPath].processedTime := A_Now
-                    }
-                }
+            FileGetTime, fileTime, %filePath%, M
+            if (fileTime > state.lastModified) {
+                state.lastModified := fileTime
             }
-            
-            if (!CommitSafeTransaction("ProcessSingleFolder")) {
-                ErrorMsg := SQLiteDB._ErrMsg()
-                MsgBox, 16, 错误, 错误 ID：212640 提交事务失败: %ErrorMsg%
-                RollbackSafeTransaction("ProcessSingleFolder")
-                Return false
-            }
-        } catch e {
-            ErrorMsg := e.Message
-            MsgBox, 16, 错误, 错误 ID：212641 ProcessSingleFolder异常: %ErrorMsg%
-            RollbackSafeTransaction("ProcessSingleFolder")
-            Return false
         }
-    } else if (ProcessingContext = "Clipboard") {
-        ProcessFolderToHistoryTable(folderPath)
     }
     
-    Return true
+    Return state
 }
 
-ProcessSingleFile(filePath) {
-    Global SQLiteDB, DBPath, FolderStates, ProcessingContext
-    
-    if (!FileExist(filePath) || InStr(FileExist(filePath), "D")) {
-        Return false
-    }
-    
-    if (!CheckDBUnlocked(DBPath)) {
-        MsgBox, 16, 错误, 错误 ID：212505 数据库被锁定
-        Return false
-    }
-    
-    if (!SQLiteDB) {
-        SQLiteDB := New SQLiteDB()
-        if (!SQLiteDB.OpenDB(DBPath)) {
-            ErrorMsg := SQLiteDB._ErrMsg()
-            MsgBox, 16, 错误, 错误 ID：4122461 打开数据库失败: %ErrorMsg%
-            Return false
-        }
-    }
-    
-    FileGetSize, fileSize, %filePath%
-    FileGetTime, fileTime, %filePath%, M
-    SplitPath, filePath, fileName, , fileExt
-    
-    Identifier := GetFileTypeSymbol(filePath, fileExt)
-    sizeText := FormatSize(fileSize)
-    
-    try {
-        if (ProcessingContext = "WatchDir") {
-            transactionStarted := BeginSafeTransaction("ProcessSingleFile")
-            if (!transactionStarted) {
-                MsgBox, 16, 错误, 错误 ID：212510 事务开始失败
-                Return false
-            }
-            
-            try {
-                CheckFileSQL := "SELECT id FROM 注册登记路径 WHERE 路径 = ?;"
-                CheckFileResult := {}
-                if (!SQLiteDB.GetTable(CheckFileSQL, CheckFileResult, [filePath])) {
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                    MsgBox, 16, 错误, 错误 ID：212511 查询文件失败: %ErrorMsg%
-                    RollbackSafeTransaction("ProcessSingleFile")
-                    Return false
-                }
-                
-                if (CheckFileResult.RowCount = 0) {
-                    InsertFileSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'));"
-                    InsertSuccess := false
-                    if (SQLiteDB.ExecuteWithParams) {
-                        InsertSuccess := SQLiteDB.ExecuteWithParams(InsertFileSQL, [Identifier, fileName, filePath, sizeText, filePath, 1])
-                    } else {
-                        EscapedIdentifier := StrReplace(Identifier, "'", "''")
-                        EscapedFileName := StrReplace(fileName, "'", "''")
-                        EscapedFilePath := StrReplace(filePath, "'", "''")
-                        EscapedSizeText := StrReplace(sizeText, "'", "''")
-                        FallbackSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES ('" . EscapedIdentifier . "', '" . EscapedFileName . "', '" . EscapedFilePath . "', '" . EscapedSizeText . "', '" . EscapedFilePath . "', 1, datetime('now', 'localtime'));"
-                        InsertSuccess := SQLiteDB.Exec(FallbackSQL)
-                    }
-                    
-                    if (!InsertSuccess) {
-                        ErrorMsg := SQLiteDB._ErrMsg()
-                        MsgBox, 16, 错误, 错误 ID：212530 插入文件失败: %ErrorMsg%
-                        RollbackSafeTransaction("ProcessSingleFile")
-                        Return false
-                    }
-                } else {
-                    needsUpdate := false
-                    if (!FolderStates.HasKey(filePath)) {
-                        needsUpdate := true
-                    } else {
-                        oldState := FolderStates[filePath]
-                        if (fileSize != oldState.totalSize || fileTime != oldState.lastModified) {
-                            needsUpdate := true
-                        }
-                    }
-                    
-                    if (needsUpdate) {
-                        UpdateFileSQL := "UPDATE 注册登记路径 SET 标识 = ?, 文件夹或文件名称 = ?, 文件夹大小 = ?, 详细资料 = ?, 文件数量 = 1, 访问时间 = datetime('now', 'localtime') WHERE 路径 = ?;"
-                        UpdateSuccess := false
-                        if (SQLiteDB.ExecuteWithParams) {
-                            UpdateSuccess := SQLiteDB.ExecuteWithParams(UpdateFileSQL, [Identifier, fileName, sizeText, filePath, filePath])
-                        } else {
-                            EscapedIdentifier := StrReplace(Identifier, "'", "''")
-                            EscapedFileName := StrReplace(fileName, "'", "''")
-                            EscapedSizeText := StrReplace(sizeText, "'", "''")
-                            EscapedFilePath := StrReplace(filePath, "'", "''")
-                            FallbackSQL := "UPDATE 注册登记路径 SET 标识 = '" . EscapedIdentifier . "', 文件夹或文件名称 = '" . EscapedFileName . "', 文件夹大小 = '" . EscapedSizeText . "', 详细资料 = '" . EscapedFilePath . "', 文件数量 = 1, 访问时间 = datetime('now', 'localtime') WHERE 路径 = '" . EscapedFilePath . "';"
-                            UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
-                        }
-                        
-                        if (!UpdateSuccess) {
-                            ErrorMsg := SQLiteDB._ErrMsg()
-                            MsgBox, 16, 错误, 错误 ID：212560 更新文件失败: %ErrorMsg%
-                            RollbackSafeTransaction("ProcessSingleFile")
-                            Return false
-                        }
-                        
-                        FolderStates[filePath] := {totalSize: fileSize, lastModified: fileTime, fileCount: 1, fileList: filePath}
-                        
-                        ProcessFileToDatabase(filePath, fileName, fileExt, fileSize)
-                    }
-                }
-                
-                if (!CommitSafeTransaction("ProcessSingleFile")) {
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                    MsgBox, 16, 错误, 错误 ID：212540 提交事务失败: %ErrorMsg%
-                    RollbackSafeTransaction("ProcessSingleFile")
-                    Return false
-                }
-            } catch e {
-                ErrorMsg := e.Message
-                MsgBox, 16, 错误, 错误 ID：212541 ProcessSingleFile异常: %ErrorMsg%
-                RollbackSafeTransaction("ProcessSingleFile")
-                Return false
-            }
-        } else if (ProcessingContext = "Clipboard") {
-            ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize)
-        }
-    } catch e {
-		eMessage := e.Message
-        MsgBox, 16, 错误, 错误 ID：212580 ProcessSingleFile异常: %eMessage%
-        if (TransactionActive && TransactionOwner = "ProcessSingleFile") {
-            RollbackSafeTransaction("ProcessSingleFile")
-        }
-        Return false
-    }
-    Return true
+FormatSize(size) {
+    if (size >= 1073741824)
+        Return Round(size / 1073741824, 1) . " GB"
+    else if (size >= 1048576)
+        Return Round(size / 1048576, 1) . " MB"
+    else if (size >= 1024)
+        Return Round(size / 1024, 1) . " KB"
+    else if (size > 0)
+        Return size . " B"
+    else
+        Return "0 B"
 }
 
-;===================|===================
-
+; ===========================================
+; 处理文件夹到历史数据表
+; ===========================================
 ProcessFolderToHistoryTable(folderPath) {
     Global SQLiteDB
     
@@ -538,6 +619,9 @@ ProcessFolderToHistoryTable(folderPath) {
     Return true
 }
 
+; ===========================================
+; 处理文件到历史数据表
+; ===========================================
 ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
     Global SQLiteDB
     
@@ -637,48 +721,9 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
     Return true
 }
 
-GetFolderState(folderPath) {
-    state := {}
-    state.fileCount := 0
-    state.totalSize := 0
-    state.lastModified := 0
-    state.fileList := ""
-    
-    Loop, Files, %folderPath%\*, F
-    {
-        filePath := A_LoopFileFullPath
-        if (FileExist(filePath) && !InStr(FileExist(filePath), "D")) {
-            state.fileList .= (state.fileList = "" ? "" : "`n") . filePath
-            state.fileCount++
-            
-            FileGetSize, fileSize, %filePath%
-            if (fileSize != "") {
-                state.totalSize += fileSize
-            }
-            
-            FileGetTime, fileTime, %filePath%, M
-            if (fileTime > state.lastModified) {
-                state.lastModified := fileTime
-            }
-        }
-    }
-    
-    Return state
-}
-
-FormatSize(size) {
-    if (size >= 1073741824)
-        Return Round(size / 1073741824, 1) . " GB"
-    else if (size >= 1048576)
-        Return Round(size / 1048576, 1) . " MB"
-    else if (size >= 1024)
-        Return Round(size / 1024, 1) . " KB"
-    else if (size > 0)
-        Return size . " B"
-    else
-        Return "0 B"
-}
-
+; ===========================================
+; 处理文件到Database表
+; ===========================================
 ProcessFileToDatabase(filePath, fileName, fileExt, fileSize) {
     Global SQLiteDB, FolderStates
     
@@ -700,8 +745,6 @@ ProcessFileToDatabase(filePath, fileName, fileExt, fileSize) {
     if (fileExt != "") {
         baseFileName := SubStr(fileName, 1, StrLen(fileName) - StrLen(fileExt) - 1)
     }
-    
-    CurrentTableName := "Database"
     
     CheckHashSQL := "SELECT 1 FROM Database WHERE 哈希值 = ? LIMIT 1;"
     CheckHashResult := {}
@@ -749,6 +792,9 @@ ProcessFileToDatabase(filePath, fileName, fileExt, fileSize) {
     Return true
 }
 
+; ===========================================
+; SavePathMerged标签（保留原有逻辑）
+; ===========================================
 SavePathMerged:
     Global SQLiteDB, ClipboardLock, retryCount, GlobalFileList, GlobalComment
     if (ClipboardLock) {
@@ -844,931 +890,3 @@ Gosub_SavePathMerged_Success() {
     Gosub, SavePathMerged
     Return !ErrorLevel
 }
-
-;===================|===================
-
-下面是参考代码
-ClipboardChanged(type) {
-    Global SQLiteDB, DBPath, IsCopying, ClipboardLock, ProcessingContext, TransactionActive, TransactionOwner, G_last_insert_rowid, G_last_insert_Main_ID, G_last_insert_Main_TableName
-	; 🔥 添加这个检查 - 任何非零的 ClipboardLock 都应该阻止执行
-    if (ClipboardLock != 0) {
-        Return
-    }
-    SetTimer, WatchDatabaseDir, Off
-  
-    WinGet, ActiveID, ID, A
-    WinGetTitle, WindowTitle, ahk_id %ActiveID%
-    if (InStr(WindowTitle, "印象记忆_5")) {
-        Return
-    }
-    if (type != 1 && type != 2) {
-        Return
-    }
-    ClipboardLock := 3
-    ProcessingContext := "Clipboard"
-    FinalID := ""
-    try {
-        if (!CheckDBUnlocked(DBPath)) {
-            MsgBox, 16, 错误, 错误 ID：4100220 ; 数据库被锁定！
-            LoadData()
-            Return
-        }
-        if (!SQLiteDB) {
-            SQLiteDB := New SQLiteDB()
-            if (!SQLiteDB.OpenDB(DBPath)) {
-                ErrorMsg := SQLiteDB._ErrMsg()
-                MsgBox, 16, 错误, 错误 ID：4103692 数据库打开失败: %ErrorMsg%
-                LoadData()
-                Return
-            }
-        }
-        MainTable := "历史数据"
-        OldMainTable := MainTable . "_temp_old"
-        DataTable := "Data_" . MainTable
-        OldDataTable := DataTable . "_temp_old"
-        PropTable := MainTable . "_关联属性"
-        OldPropTable := PropTable . "_temp_old"
-        SQLiteDB.Exec("PRAGMA foreign_keys = OFF;")
-        CheckMainSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . MainTable . "';"
-        MainResult := {}
-        if (SQLiteDB.GetTable(CheckMainSQL, MainResult) && MainResult.RowCount = 0) {
-            CheckOldMainSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . OldMainTable . "';"
-            OldMainResult := {}
-            if (SQLiteDB.GetTable(CheckOldMainSQL, OldMainResult) && OldMainResult.RowCount > 0) {
-                RenameMainSQL := "ALTER TABLE [" . OldMainTable . "] RENAME TO [" . MainTable . "];"
-                if (SQLiteDB.Exec(RenameMainSQL)) {
-                } else {
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                    MsgBox, 16, 错误, 错误 ID：4111311 无法恢复主表: %ErrorMsg%
-                    SQLiteDB.Exec("PRAGMA foreign_keys = ON;")
-                    LoadData()
-                    Return
-                }
-            } else {
-                MsgBox, 16, 错误, 错误 ID：4113412 主表缺失且无备份！
-                SQLiteDB.Exec("PRAGMA foreign_keys = ON;")
-                LoadData()
-                Return
-            }
-        } else {
-            CheckOldMainSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . OldMainTable . "';"
-            OldMainResult := {}
-            if (SQLiteDB.GetTable(CheckOldMainSQL, OldMainResult) && OldMainResult.RowCount > 0) {
-                if (SQLiteDB.Exec("DROP TABLE [" . OldMainTable . "];")) {
-                } else {
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                }
-            }
-        }
-        CheckDataSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . DataTable . "';"
-        DataResult := {}
-        if (SQLiteDB.GetTable(CheckDataSQL, DataResult) && DataResult.RowCount = 0) {
-            CheckOldDataSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . OldDataTable . "';"
-            OldDataResult := {}
-            if (SQLiteDB.GetTable(CheckOldDataSQL, OldDataResult) && OldDataResult.RowCount > 0) {
-                RenameDataSQL := "ALTER TABLE [" . OldDataTable . "] RENAME TO [" . DataTable . "];"
-                if (SQLiteDB.Exec(RenameDataSQL)) {
-                    AlterDataSQL := "ALTER TABLE [" . DataTable . "] ADD FOREIGN KEY(lParentID) REFERENCES [" . MainTable . "](ID);"
-                    SQLiteDB.Exec(AlterDataSQL)
-                } else {
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                    MsgBox, 16, 错误, 错误 ID：4119130 无法恢复数据表: %ErrorMsg%
-                    SQLiteDB.Exec("PRAGMA foreign_keys = ON;")
-                    LoadData()
-                    Return
-                }
-            }
-        } else {
-            CheckOldDataSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . OldDataTable . "';"
-            OldDataResult := {}
-            if (SQLiteDB.GetTable(CheckOldDataSQL, OldDataResult) && OldDataResult.RowCount > 0) {
-                if (SQLiteDB.Exec("DROP TABLE [" . OldDataTable . "];")) {
-                } else {
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                }
-            }
-        }
-        CheckPropSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . PropTable . "';"
-        PropResult := {}
-        if (SQLiteDB.GetTable(CheckPropSQL, PropResult) && PropResult.RowCount = 0) {
-            CheckOldPropSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . OldPropTable . "';"
-            OldPropResult := {}
-            if (SQLiteDB.GetTable(CheckOldPropSQL, OldPropResult) && OldPropResult.RowCount > 0) {
-                RenamePropSQL := "ALTER TABLE [" . OldPropTable . "] RENAME TO [" . PropTable . "];"
-                if (SQLiteDB.Exec(RenamePropSQL)) {
-                    AlterPropFK1SQL := "ALTER TABLE [" . PropTable . "] ADD FOREIGN KEY(属性ID) REFERENCES 关联属性表(ID);"
-                    AlterPropFK2SQL := "ALTER TABLE [" . PropTable . "] ADD FOREIGN KEY(ID) REFERENCES [" . MainTable . "](ID) ON DELETE CASCADE;"
-                    SQLiteDB.Exec(AlterPropFK1SQL)
-                    SQLiteDB.Exec(AlterPropFK2SQL)
-                } else {
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                    MsgBox, 16, 错误, 错误 ID：4127581 无法恢复属性表: %ErrorMsg%
-                    SQLiteDB.Exec("PRAGMA foreign_keys = ON;")
-                    LoadData()
-                    Return
-                }
-            }
-        } else {
-            CheckOldPropSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='" . OldPropTable . "';"
-            OldPropResult := {}
-            if (SQLiteDB.GetTable(CheckOldPropSQL, OldPropResult) && OldPropResult.RowCount > 0) {
-                if (SQLiteDB.Exec("DROP TABLE [" . OldPropTable . "];")) {
-                } else {
-                    ErrorMsg := SQLiteDB._ErrMsg()
-                }
-            }
-        }
-        SQLiteDB.Exec("PRAGMA foreign_keys = ON;")
-        CheckAssocTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='关联属性表';"
-        CheckPropTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='历史数据_关联属性';"
-        CheckMainTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='历史数据';"
-        AssocTableResult := {}
-        PropTableResult := {}
-        MainTableResult := {}
-        if (!SQLiteDB.GetTable(CheckAssocTableSQL, AssocTableResult) || AssocTableResult.RowCount = 0) {
-            MsgBox, 16, 错误, 错误 ID：4133064 关联属性表不存在！
-            LoadData()
-            Return
-        }
-        if (!SQLiteDB.GetTable(CheckPropTableSQL, PropTableResult) || PropTableResult.RowCount = 0) {
-            MsgBox, 16, 错误, 错误 ID：4135569 历史数据_关联属性表不存在！
-            LoadData()
-            Return
-        }
-        if (!SQLiteDB.GetTable(CheckMainTableSQL, MainTableResult) || MainTableResult.RowCount = 0) {
-            MsgBox, 16, 错误, 错误 ID：4140580 历史数据表不存在！
-            LoadData()
-            Return
-        }
-        GetColumnsSQL := "PRAGMA table_info(历史数据);"
-        ColumnsResult := {}
-        RequiredFields := ["备注", "内容", "置顶", "置顶索引", "收藏", "禁删", "星级", "标签", "分组", "类型", "创建时间", "修改时间", "访问时间", "访问次数", "更新次数", "字节", "字符", "行数", "数量", "标识", "窗口详情", "应用名称", "哈希值", "排序", "标记状态"]
-        MissingFields := []
-        if (SQLiteDB.GetTable(GetColumnsSQL, ColumnsResult)) {
-            ExistingColumns := []
-            Loop, % ColumnsResult.RowCount {
-                ExistingColumns.Insert(ColumnsResult.Rows[A_Index][2])
-            }
-            for index, field in RequiredFields {
-                if (!ArrayContains(ExistingColumns, field)) {
-                    MissingFields.Insert(field)
-                }
-            }
-            if (MissingFields.MaxIndex() > 0) {
-                MissingFieldsList := Join(MissingFields, ", ")
-                MsgBox, 16, 错误, 错误 ID：4146625 历史数据表缺少必要字段：%MissingFieldsList%
-                LoadData()
-                Return
-            }
-        } else {
-            ErrorMsg := SQLiteDB._ErrMsg()
-            MsgBox, 16, 错误, 错误 ID：4149159 查询表结构失败: %ErrorMsg%
-            LoadData()
-            Return
-        }
-        Sleep, 100
-        ClipData := ""
-        Format := ""
-        DataType := 1
-        Identifier := ""
-        FileCount := 0
-        ValidCount := 0
-        TotalSize := 0
-        Bytes := ""
-        Group := ""
-        Remark := ""
-        AllPaths := []
-        FolderPath := ""
-        if (!BeginSafeTransaction("ClipboardChanged")) {
-            MsgBox, 16, 错误, 错误 ID：1938940 开始事务失败！
-            LoadData()
-            Return
-        }
-        if (DllCall("IsClipboardFormatAvailable", "UInt", 15)) {
-            Format := "CF_HDROP"
-            ClipData := Clipboard
-            FilePathsList := ""
-          
-            Loop, Parse, Clipboard, `n, `r
-            {
-                Path := Trim(A_LoopField)
-                if (Path != "" && FileExist(Path)) {
-                    AllPaths.Push(Path)
-                    FileCount++
-                }
-            }
-          
-            if (FileCount = 0) {
-                RollbackSafeTransaction("ClipboardChanged")
-                LoadData()
-                Return
-            }
-          
-            Path := AllPaths[1]
-            FileAttrib := FileExist(Path)
-            isFolderMode := InStr(FileAttrib, "D")
-          
-            SplitPath, Path, FileName, FileDir, FileExt, FileNameNoExt
-            SplitPath, FileDir, , , , ParentDir
-            Group := FileDir ? ParentDir : ""
-          
-            if (isFolderMode) {
-                Loop, % AllPaths.MaxIndex() {
-                    CurrentPath := AllPaths[A_Index]
-                    CurrentAttrib := FileExist(CurrentPath)
-                    if (!InStr(CurrentAttrib, "D")) {
-                        continue
-                    }
-                  
-                    LocalValidCount := 0
-                    LocalTotalSize := 0
-                    LocalFilePathsList := ""
-                    Loop, Files, %CurrentPath%\*.*, FR
-                    {
-                        if (FileExist(A_LoopFileFullPath)) {
-                            LocalValidCount++
-                            FileGetSize, FileSize, %A_LoopFileFullPath%, B
-                            LocalTotalSize += FileSize
-                            LocalFilePathsList .= A_LoopFileFullPath . "`n"
-                        }
-                    }
-                    LocalFilePathsList := RTrim(LocalFilePathsList, "`n")
-                    LocalClipData := LocalFilePathsList
-                  
-                    LocalSizeStr := ""
-                    if (LocalTotalSize > 0) {
-                        if (LocalTotalSize < 1024)
-                            LocalSizeStr := LocalTotalSize . " B"
-                        else if (LocalTotalSize < 1024 * 1024)
-                            LocalSizeStr := Round(LocalTotalSize / 1024,2) . " KB"
-                        else if (LocalTotalSize < 1024 * 1024 * 1024)
-                            LocalSizeStr := Round(LocalTotalSize / (1024 * 1024),2) . " MB"
-                        else
-                            LocalSizeStr := Round(LocalTotalSize / (1024 * 1024 * 1024),2) . " GB"
-                    }
-                  
-                    SplitPath, CurrentPath, LocalFileName, LocalFileDir, , LocalFileNameNoExt
-                    SplitPath, LocalFileDir, , , , LocalParentDir
-                    LocalGroup := LocalFileDir ? LocalParentDir : ""
-                  
-                    LocalTempRemark := "Copied Folder - " . LocalFileNameNoExt . " | 数量: 1 | 有效: " . LocalValidCount . " | 大小: " . LocalSizeStr
-                    LocalContent := LocalTempRemark
-                    LocalRemark := CurrentPath
-                  
-                    LocalIdentifier := "📁"
-                    LocalFormat := "CF_HDROP,📁"
-                  
-                    ClipData := LocalClipData
-                    Content := LocalContent
-                    Remark := LocalRemark
-                    Identifier := LocalIdentifier
-                    Format := LocalFormat
-                    Group := LocalGroup
-                  
-                    gosub, InsertCommon
-                    if (FinalID = "" || FinalID <= 0) {
-                        return
-                    }
-                }
-            } else {
-                ValidCount := 0
-                TotalSize := 0
-                FilePathsList := ""
-                Loop, % AllPaths.MaxIndex() {
-                    CurrentPath := AllPaths[A_Index]
-                    FilePathsList .= CurrentPath . "`n"
-                    FileGetSize, FileSize, %CurrentPath%, B
-                    TotalSize += FileSize
-                    ValidCount++
-                }
-                FilePathsList := RTrim(FilePathsList, "`n")
-                ClipData := FilePathsList
-              
-                SizeStr := ""
-                if (TotalSize > 0) {
-                    if (TotalSize < 1024)
-                        SizeStr := TotalSize . " B"
-                    else if (TotalSize < 1024 * 1024)
-                        SizeStr := Round(TotalSize / 1024,2) . " KB"
-                    else if (TotalSize < 1024 * 1024 * 1024)
-                        SizeStr := Round(TotalSize / (1024 * 1024),2) . " MB"
-                    else
-                        SizeStr := Round(TotalSize / (1024 * 1024 * 1024),2) . " GB"
-                }
-              
-                ; 使用 GetFileTypeSymbol 函数获取标识符
-                Identifier := GetFileTypeSymbol(Path, FileExt)
-                Format := "CF_HDROP," . Identifier
-                if (FileExt != "") {
-                    Format .= "," . FileExt
-                }
-                TempRemark := "Copied File - " . FileNameNoExt . " | 数量: " . FileCount . " | 有效: " . ValidCount . " | 大小: " . SizeStr
-                Content := TempRemark
-                Remark := FileName
-              
-                gosub, InsertCommon
-                if (FinalID = "" || FinalID <= 0) {
-                    return
-                }
-            }
-        } else {
-            ClipData := Clipboard
-            Format := "CF_UNICODETEXT"
-            ClipData := RegExReplace(ClipData, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "")
-            ClipData := Trim(ClipData)
-            if (ClipData = "" || RegExMatch(ClipData, "^\s*$")) {
-                RollbackSafeTransaction("ClipboardChanged")
-                LoadData()
-                Return
-            }
-            if (StrLen(ClipData) > 5000000) {
-                RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：4159040 文本剪贴板内容过大（超过 5MB）！
-                LoadData()
-                Return
-            }
-            lines := StrSplit(ClipData, "`n")
-            FirstLine := Trim(lines[1])
-            if (RegExMatch(FirstLine, "^[A-Za-z]:\\.*$") || RegExMatch(FirstLine, "^\\\\.*$")) {
-                FirstAttrib := FileExist(FirstLine)
-                SplitPath, FirstLine, FileName, FileDir, FileExt, FileNameNoExt
-                if (InStr(FirstAttrib, "D")) {
-                    Identifier := "📁𝓟"
-                    Format := "CF_UNICODETEXT,📁𝓟"
-                } else {
-                    ; 使用 GetFileTypeSymbol 函数获取标识符
-                    Identifier := GetFileTypeSymbol(FirstLine, FileExt) . "𝓟"
-                    Format := "CF_UNICODETEXT," . Identifier
-                    if (FileExt != "") {
-                        Format .= "," . FileExt
-                    }
-                }
-                FileCount := 0
-                ValidCount := 0
-                TotalSize := 0
-                Loop, % lines.Length() {
-                    Path := Trim(lines[A_Index])
-                    if (Path != "" && FileExist(Path)) {
-                        FileAttrib := FileExist(Path)
-                        FileCount++
-                        if (InStr(FileAttrib, "D")) {
-                            Loop, Files, %Path%\*.*, F
-                            {
-                                if (FileExist(A_LoopFileFullPath)) {
-                                    ValidCount++
-                                    FileGetSize, FileSize, %A_LoopFileFullPath%, B
-                                    TotalSize += FileSize
-                                }
-                            }
-                        } else {
-                            ValidCount++
-                            FileGetSize, FileSize, %Path%, B
-                            TotalSize += FileSize
-                        }
-                    }
-                }
-                SizeStr := ""
-                if (TotalSize > 0) {
-                    if (TotalSize < 1024)
-                        SizeStr := TotalSize . " B"
-                    else if (TotalSize < 1024 * 1024)
-                        SizeStr := Round(TotalSize / 1024,2) . " KB"
-                    else if (TotalSize < 1024 * 1024 * 1024)
-                        SizeStr := Round(TotalSize / (1024 * 1024),2) . " MB"
-                    else
-                        SizeStr := Round(TotalSize / (1024 * 1024 * 1024),2) . " GB"
-                }
-                SplitPath, FileDir, , , , ParentDir
-                Group := FileDir ? ParentDir : ""
-                if (InStr(FirstAttrib, "D")) {
-                    TempRemark := "Copied Folder Path - " . FileNameNoExt . " | 数量: " . FileCount . " | 有效: " . ValidCount . " | 大小: " . SizeStr
-                } else {
-                    TempRemark := "Copied File Path - " . FileNameNoExt . " | 数量: " . FileCount . " | 有效: " . ValidCount . " | 大小: " . SizeStr
-                }
-                Content := RegExReplace(ClipData, "[\r\n]+", " ")
-                Remark := Content
-                Content := TempRemark
-            } else {
-                if (RegExMatch(ClipData, "^(https?|ftp)://[A-Za-z0-9\-\.]+(:[0-9]+)?(/[A-Za-z0-9\-\._~:/?#\[\]@!$&'()*+,;=%]*)?$")) {
-                    Format := "CF_UNICODETEXT,🔗"
-                    Identifier := "🔗"
-                    Content := ClipData
-                    if (RegExMatch(ClipData, "://([^/]+)", domainMatch)) {
-                        fullDomain := domainMatch1
-                        if (RegExMatch(fullDomain, "^(?:www\.)?([^.]+)\.[^.]+$", mainDomainMatch)) {
-                            Remark := mainDomainMatch1
-                        } else {
-                            Remark := fullDomain
-                        }
-                    } else {
-                        Remark := SubStr(ClipData, 1, 200)
-                    }
-                } else {
-                    Remark := FirstLine
-                    ByteCount := StrPut(ClipData, "UTF-8") - 1
-                    if (ByteCount < 1024)
-                        Bytes := ByteCount . " B"
-                    else if (ByteCount < 1024 * 1024)
-                        Bytes := Round(ByteCount / 1024,2) . " KB"
-                    else if (ByteCount < 1024 * 1024 * 1024)
-                        Bytes := Round(ByteCount / (1024 * 1024),2) . " MB"
-                    else
-                        Bytes := Round(ByteCount / (1024 * 1024 * 1024),2) . " GB"
-                    CharCount := StrLen(ClipData)
-                    LineCount := lines.Length()
-                    Content := "[文本] | " . CharCount . " 字符 | " . Bytes . " | " . LineCount . " 行"
-                }
-            }
-          
-            gosub, InsertCommon
-            if (FinalID = "" || FinalID <= 0) {
-                return
-            }
-        }
-        ; === 分类字典_One：最后插入ID（统一结构）===
-        DeleteRecordSQL := "DELETE FROM ""分类字典_One"" WHERE ""Category_Main"" = '最后插入ID' AND ""Category_Sub"" = '最后插入ID';"
-        SQLiteDB.Exec(DeleteRecordSQL)
-        LastIDValue := (FinalID ? FinalID : "")
-        InsertRecordSQL := "INSERT OR REPLACE INTO ""分类字典_One"" "
-                         . "(""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
-                         . "VALUES ('最后插入ID', '最后插入ID', ?, 1, datetime('now','localtime'));"
-        if (SQLiteDB.ExecuteWithParams) {
-            SQLiteDB.ExecuteWithParams(InsertRecordSQL, [LastIDValue])
-        } else {
-            EscapedLastID := StrReplace(LastIDValue, "'", "''")
-            FallbackSQL := "INSERT OR REPLACE INTO ""分类字典_One"" "
-                         . "(""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
-                         . "VALUES ('最后插入ID', '最后插入ID', '" . EscapedLastID . "', 1, datetime('now','localtime'));"
-            SQLiteDB.Exec(FallbackSQL)
-        }
-        if (!CommitSafeTransaction("ClipboardChanged")) {
-            RollbackSafeTransaction("ClipboardChanged")
-            MsgBox, 16, 错误, 错误 ID：3828190 事务提交失败！
-            LoadData()
-            Return
-        }
-        AttrCount := VerifyAllAttributes(FinalID, "历史数据")
-        if (AttrCount < 0) {
-            MsgBox, 16, 错误, 错误 ID：5020111 属性关联验证失败
-        }
-        return
-    InsertCommon:
-        HashValue := ""
-        try {
-            if (ClipData != "") {
-                HashValue := Crypt.Hash.Str(ClipData, "SHA256")
-            }
-        } catch e {
-            eMessage := e.Message
-            RollbackSafeTransaction("ClipboardChanged")
-            MsgBox, 16, 错误, 错误 ID：5334156 计算哈希值失败: %eMessage%
-            LoadData()
-            Return
-        }
-        ; === 使用分类字典_One表维护排序最大值（带唯一性处理）===
-        GetMaxSortSQL := "SELECT COALESCE(""Record_Value"", 0) FROM ""分类字典_One"" WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' LIMIT 1;"
-        MaxSortResult := {}
-        CurrentMax := 0
-        if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
-            CurrentMax := MaxSortResult.Rows[1][1] + 0 ; 强制转为数字
-        } else {
-            ; 初始化
-            InitSQL := "INSERT OR IGNORE INTO ""分类字典_One"" (""Category_Main"", ""Category_Sub"", ""Record_Value"", ""Flag_Status"", ""Update_Time"") "
-                     . "VALUES ('排序值', '最大值', '0', 0, datetime('now','localtime'));"
-            if (!SQLiteDB.Exec(InitSQL)) {
-                ErrorMsg := SQLiteDB._ErrMsg()
-                RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：3646934 新ID-排序初始化失败: %ErrorMsg%
-                LoadData()
-                Return
-            }
-            CurrentMax := 0
-        }
-        ; 循环获取唯一排序值
-        Loop {
-            NewSortValue := CurrentMax + 1
-            ; 尝试更新最大值
-            UpdateMaxSQL := "UPDATE ""分类字典_One"" SET ""Record_Value"" = ?, ""Update_Time"" = datetime('now','localtime') "
-                          . "WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' AND ""Record_Value"" = ?;"
-            Success := false
-            RetryCount := 3
-            while (RetryCount > 0) {
-                if (SQLiteDB.ExecuteWithParams) {
-                    if (SQLiteDB.ExecuteWithParams(UpdateMaxSQL, [NewSortValue, CurrentMax])) {
-                        Success := true
-                        break
-                    }
-                } else {
-                    FallbackSQL := "UPDATE ""分类字典_One"" SET ""Record_Value"" = '" . NewSortValue . "', ""Update_Time"" = datetime('now','localtime') "
-                                 . "WHERE ""Category_Main"" = '排序值' AND ""Category_Sub"" = '最大值' AND ""Record_Value"" = '" . CurrentMax . "';"
-                    if (SQLiteDB.Exec(FallbackSQL)) {
-                        Success := true
-                        break
-                    }
-                }
-                ErrorMsg := SQLiteDB._ErrMsg()
-                if (InStr(ErrorMsg, "SQLITE_BUSY")) {
-                    Sleep, 50
-                    RetryCount--
-                    continue
-                }
-                ; 新增：检查唯一约束失败
-                if (InStr(ErrorMsg, "UNIQUE constraint failed")) {
-                    ; 重新读取（使用修复后的 SQL）
-                    if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
-                        CurrentMax := MaxSortResult.Rows[1][1] + 0
-                    } else {
-                        CurrentMax := 0
-                    }
-                    break ; 退出 while，重试外层 Loop
-                }
-                break
-            }
-            if (Success) {
-                ; 更新成功，说明 NewSortValue 可用
-                break
-            } else {
-                ; 更新失败，说明有并发，重新读取当前最大值
-                if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
-                    CurrentMax := MaxSortResult.Rows[1][1] + 0
-                } else {
-                    CurrentMax := 0
-                }
-            }
-        }
-        ExistingID := ""
-        CheckSQL := "SELECT ID FROM 历史数据 WHERE 哈希值 = ? LIMIT 1;"
-        CheckResult := {}
-        if (SQLiteDB.GetTable(CheckSQL, CheckResult, [HashValue]) && CheckResult.RowCount >= 1) {
-            ExistingID := CheckResult.Rows[1][1]
-        }
-        if (StrLen(Content) > 1000000) {
-            Content := SubStr(Content, 1, 1000000)
-        }
-        if (StrLen(Remark) > 1000) {
-            Remark := SubStr(Remark, 1, 1000)
-        }
-        HashValue := HashValue ? HashValue : ""
-        Bytes := Bytes ? Bytes : ""
-        WindowDetail := WindowTitle ? WindowTitle : ""
-        Identifier := Identifier ? Identifier : ""
-        Format := Format ? Format : ""
-        Remark := Remark ? RegExReplace(Remark, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
-        Content := Content ?RegExReplace(Content, "[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
-        Group := Group ? RegExReplace(Group, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : ""
-        AppName := AppName ? RegExReplace(AppName, "[\r\n\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ") : "未知应用"
-        if (RegExMatch(WindowTitle, "(.+)\s*-\s*(.+)$", Match)) {
-            AppName := Trim(Match2)
-        } else {
-            AppName := WindowTitle ? WindowTitle : "未知应用"
-        }
-        EscapedHashValue := StrReplace(HashValue, "'", "''")
-        EscapedBytes := StrReplace(Bytes, "'", "''")
-        EscapedWindowDetail := StrReplace(WindowTitle, "'", "''")
-        EscapedIdentifier := StrReplace(Identifier, "'", "''")
-        EscapedFormat := StrReplace(Format, "'", "''")
-        EscapedRemark := StrReplace(Remark, "'", "''")
-        EscapedContent := StrReplace(Content, "'", "''")
-        EscapedGroup := StrReplace(Group, "'", "''")
-        EscapedAppName := StrReplace(AppName, "'", "''")
-        EscapedClipData := StrReplace(ClipData, "'", "''")
-        Success := false
-        RetryCount := 3
-        G_last_insert_rowid := ""
-      
-        if (ExistingID != "") {
-            ; 🔥 修改：UPDATE 语句中 类型、分组、应用名称、标识 设为空
-            UpdateSQL := "UPDATE 历史数据 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 类型 = '', 分组 = '', 应用名称 = '', 标识 = '', 处理状态 = NULL, 提示时间 = NULL, 提示 = NULL WHERE ID = " . ExistingID . ";"
-            while (RetryCount > 0) {
-                if (SQLiteDB.Exec(UpdateSQL)) {
-                    Success := true
-                    FinalID := ExistingID
-                    G_last_insert_rowid := ExistingID
-                    G_last_insert_Main_ID := ExistingID
-                    G_last_insert_Main_TableName := "历史数据"
-                    break
-                }
-                ErrorMsg := SQLiteDB._ErrMsg()
-                if (InStr(ErrorMsg, "SQLITE_BUSY")) {
-                    Sleep, 100
-                    RetryCount--
-                    continue
-                }
-                break
-            }
-            if (!Success) {
-                RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：3720054 更新主表失败: %ErrorMsg%
-                LoadData()
-                Return
-            }
-            DeleteDataSQL := "DELETE FROM Data_历史数据 WHERE lParentID = " . ExistingID . ";"
-            RetryCount := 3
-            Success := false
-            while (RetryCount > 0) {
-                if (SQLiteDB.Exec(DeleteDataSQL)) {
-                    Success := true
-                    break
-                }
-                ErrorMsg := SQLiteDB._ErrMsg()
-                if (InStr(ErrorMsg, "SQLITE_BUSY")) {
-                    Sleep, 100
-                    RetryCount--
-                    continue
-                }
-                break
-            }
-            if (!Success) {
-                RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：3724787 ; 删除数据表失败: %ErrorMsg%
-                LoadData()
-                Return
-            }
-            InsertDataSQL := "INSERT INTO Data_历史数据 (lParentID, strClipBoardFormat, ooData) VALUES (" . ExistingID . ", '" . EscapedFormat . "', '" . EscapedClipData . "');"
-            RetryCount := 3
-            Success := false
-            while (RetryCount > 0) {
-                if (SQLiteDB.Exec(InsertDataSQL)) {
-                    Success := true
-                    break
-                }
-                ErrorMsg := SQLiteDB._ErrMsg()
-                if (InStr(ErrorMsg, "SQLITE_BUSY")) {
-                    Sleep, 100
-                    RetryCount--
-                    continue
-                }
-                break
-            }
-            if (!Success) {
-                RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：3958064 ; 插入数据表失败: %ErrorMsg%
-                LoadData()
-                Return
-            }
-        } else {
-            AllocSQL := "INSERT INTO 中心化 (标记状态) VALUES (0);"
-            if (!SQLiteDB.Exec(AllocSQL)) {
-                ErrorMsg := SQLiteDB._ErrMsg()
-                RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：5142862 ; 分配全局ID失败: %ErrorMsg%
-                LoadData()
-                Return
-            }
-          
-            LastIDResult := {}
-            G_last_insert_rowid := ""
-            FinalID := ""
-            if (SQLiteDB.GetTable("SELECT last_insert_rowid() AS newid;", LastIDResult) && LastIDResult.RowCount > 0) {
-                G_last_insert_rowid := LastIDResult.Rows[1][1]
-                FinalID := G_last_insert_rowid
-            } else {
-                ErrorMsg := SQLiteDB._ErrMsg()
-                RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：5224280 ;  获取全局ID失败: %ErrorMsg%
-                LoadData()
-                Return
-            }
-          
-            if (FinalID = "" || FinalID <= 0) {
-                RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：5234045 ;  全局ID无效: FinalID = %FinalID%
-                LoadData()
-                Return
-            }
-          
-            ; 🔥 修改：INSERT 语句中 类型、分组、应用名称、标识 设为空字符串
-            InsertMainSQL := "INSERT INTO 历史数据 (ID, 哈希值, 字节, 窗口详情, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 标识, 处理状态, 提示时间, 提示) VALUES (" . FinalID . ", '" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '', '', '', NULL, NULL, NULL);"
-          
-            RetryCount := 3
-            Success := false
-            while (RetryCount > 0) {
-                if (SQLiteDB.Exec(InsertMainSQL)) {
-                    Success := true
-                    break
-                }
-                ErrorMsg := SQLiteDB._ErrMsg()
-                if (InStr(ErrorMsg, "UNIQUE constraint failed: 历史数据.排序")) {
-                    ; 排序值冲突，重新获取
-                    if (SQLiteDB.GetTable(GetMaxSortSQL, MaxSortResult) && MaxSortResult.RowCount > 0) {
-                        CurrentMax := MaxSortResult.Rows[1][1] + 0
-                    } else {
-                        CurrentMax := 0
-                    }
-                    NewSortValue := CurrentMax + 1
-                    InsertMainSQL := RegExReplace(InsertMainSQL, "排序 = \d+", "排序 = " . NewSortValue)
-                    Sleep, 50
-                    RetryCount--
-                    continue
-                }
-                if (InStr(ErrorMsg, "SQLITE_BUSY")) {
-                    Sleep, 100
-                    RetryCount--
-                    continue
-                }
-                break
-            }
-            if (!Success) {
-                RollbackSafeTransaction("ClipboardChanged")
-                ; MsgBox, 16, 错误, 错误 ID：1333744 插入主表失败: %ErrorMsg%`n`nSQL: %InsertMainSQL%
-				GetGlobalMaxSortValue()
-				ClipboardChanged(type)
-                ; LoadData()
-                Return
-            }
-          
-            MarkSQL := "UPDATE 中心化 SET 标记状态 = 1 WHERE Local_ID = " . FinalID . ";"
-            if (!SQLiteDB.Exec(MarkSQL)) {
-            }
-          
-            InsertDataSQL := "INSERT INTO Data_历史数据 (lParentID, strClipBoardFormat, ooData) VALUES (" . FinalID . ", '" . EscapedFormat . "', '" . EscapedClipData . "');"
-            RetryCount := 3
-            Success := false
-            while (RetryCount > 0) {
-                if (SQLiteDB.Exec(InsertDataSQL)) {
-                    Success := true
-                    break
-                }
-                ErrorMsg := SQLiteDB._ErrMsg()
-                if (InStr(ErrorMsg, "SQLITE_BUSY")) {
-                    Sleep, 100
-                    RetryCount--
-                    continue
-                }
-                break
-            }
-            if (!Success) {
-                RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：4653894 插入数据表失败: %ErrorMsg%
-                LoadData()
-                Return
-            }
-            G_last_insert_Main_ID := FinalID
-            G_last_insert_Main_TableName := "历史数据"
-        }
-        
-        ; 🔥 属性插入部分 - 开始（将 类型、分组、应用名称、标识 插入到关联属性表）
-        Attributes := []
-        Attributes.Push({Format: "星级", Value: "0"})
-        
-        ; 将类型字段拆分后插入到关联属性表
-        if (Format != "") {
-            ; 拆分格式字符串（如 "CF_HDROP,📎,exe" -> ["CF_HDROP", "📎", "exe"]）
-            FormatParts := StrSplit(Format, ",")
-            Loop, % FormatParts.Length() {
-                TypeValue := Trim(FormatParts[A_Index])
-                if (TypeValue != "" && TypeValue != "CF_HDROP" && TypeValue != "CF_UNICODETEXT") {
-                    ; 过滤掉系统格式标识，只保留有意义的类型
-                    Attributes.Push({Format: "类型", Value: TypeValue})
-                }
-            }
-        }
-        
-        ; 将标识符也插入到关联属性表
-        if (Identifier != "") {
-            Attributes.Push({Format: "标识", Value: Identifier})
-        }
-        
-        ; 如果是网址，添加特定关键字
-        if (Identifier = "🔗") {
-            Attributes.Push({Format: "关键字", Value: "网址"})
-            Attributes.Push({Format: "关键字", Value: "链接"})
-            Attributes.Push({Format: "关键字", Value: "网站"})
-        }
-        
-        if (DataType = 1 && ClipData != "") {
-            if (InStr(ClipData, ";") || InStr(ClipData, "{") || InStr(ClipData, "}") || InStr(ClipData, "function") || InStr(ClipData, "def ") || InStr(ClipData, "#include") || InStr(ClipData, "public ") || InStr(ClipData, "private ") || InStr(ClipData, "class ") || InStr(ClipData, "var ") || InStr(ClipData, "let ") || InStr(ClipData, "const ") || InStr(ClipData, "if (") || InStr(ClipData, "else") || InStr(ClipData, "for (") || InStr(ClipData, "while (")) {
-                Attributes.Push({Format: "关键字", Value: "代码"})
-            }
-        }
-        
-        ; 将分组插入到关联属性表
-        if (Group != "") {
-            Attributes.Push({Format: "分组", Value: Group})
-        }
-        
-        ; 将应用名称插入到关联属性表
-        if (AppName != "" && AppName != "未知应用") {
-            Attributes.Push({Format: "应用名称", Value: AppName})
-            IsFolderPath := (RegExMatch(AppName, "^[A-Za-z]:\\.*$") && InStr(FileExist(AppName), "D"))
-            if (!IsFolderPath) {
-                Tags := []
-                if (RegExMatch(AppName, "^(.+)\s*-\s*(.+)$", Match)) {
-                    FirstPart := Trim(Match1)
-                    SecondPart := Trim(Match2)
-                    if (!RegExMatch(FirstPart, "\.[a-zA-Z0-9]{1,4}$")) {
-                        Tags.Push(FirstPart)
-                    }
-                    if (SecondPart = "Google Chrome") {
-                        Tags.Push("Chrome")
-                    } else {
-                        Tags.Push(SecondPart)
-                    }
-                } else {
-                    if (AppName = "Google Chrome") {
-                        Tags.Push("Chrome")
-                    } else {
-                        Tags.Push(AppName)
-                    }
-                }
-                for index, Tag in Tags {
-                    if (Tag != "" && Tag != "未知应用") {
-                        Attributes.Push({Format: "关键字", Value: Tag})
-                    }
-                }
-            }
-        }
-        
-        for index, attr in Attributes {
-            Result := InsertAttribute("历史数据", FinalID, attr.Format, attr.Value)
-            ErrorMsg := Result.ErrorMsg
-            if (!Result.Success && ErrorMsg != "星级为 0，跳过插入" && ErrorMsg != "属性格式或值为空，跳过") {
-                RollbackSafeTransaction("ClipboardChanged")
-                MsgBox, 16, 错误, 错误 ID：2125567 插入属性失败: %ErrorMsg%
-                LoadData()
-                Return
-            }
-        }
-        ; 🔥 属性插入部分 - 结束
-        
-        return
-      
-    } catch e {
-        eMessage := e.Message
-        RollbackSafeTransaction("ClipboardChanged")
-        MsgBox, 16, 错误, 错误 ID：4846379 ClipboardChanged 异常: %eMessage%
-    } finally {
-        G_last_insert_rowid := FinalID
-        g_CurrentRecord.ID := FinalID
-        g_CurrentRecord.TableName := "历史数据"
-        SB_SetText("ClipboardChanged: 填充缓存 ID=" . FinalID)
-        ProcessingContext := ""
-        if (ClipboardLock = 3) {
-            ClipboardLock := 0
-            PostMessage, 0x0400 + 1, 0, 0, , ahk_class AutoHotkey
-        }
-        LoadData()
-		GetGlobalMaxSortValue()
-        SetTimer, WatchDatabaseDir, 3000
-    }
-    Return
-}
-
-;===================|===================
-
-EditingOptions:
-    Global SQLiteDB, DBPath
-    ; 调试：输出当前数据库路径
-    ; AddDebugLog("当前数据库路径：" . DBPath)
-    PathContent := ""
-    ; 查询分类字典_One表中的路径
-    SQL := "SELECT Category_Sub FROM 分类字典_One WHERE Category_Main='监听文件夹';"
-    ; AddDebugLog("开始查询")
-    Result := {}
-    if (SQLiteDB.GetTable(SQL, Result) && Result.RowCount > 0) {
-        Loop, % Result.RowCount {
-            value := Result.Rows[A_Index][1]
-            PathContent .= value . "`n"
-            ; AddDebugLog("读取到：" . value)
-        }
-        ; AddDebugLog("全部拼接结果：" . PathContent)
-    } else {
-        ; AddDebugLog("查询失败或无数据：" . SQLiteDB._ErrMsg())
-    }
-    Gui, EditGui:New, +MinSize400x565, 监听文件夹 v1.34
-    Gui, EditGui:Font, s10, Microsoft YaHei
-    Gui, EditGui:Color, FFFFFF
-    ; 添加说明文本控件
-    Gui, EditGui:Font, s10, Microsoft YaHei
-    Gui, EditGui:Add, Text, x10 y10 w380 h30 +Wrap, 注意：每行填写一个文件夹路径，仅保留编辑框里文件夹路径。
-    ; 编辑框下移
-    Gui, EditGui:Font, s10, Microsoft YaHei
-    Gui, EditGui:Add, Edit, x10 y45 w380 h472 vDirectoryContent Multi, %PathContent%
-    Gui, EditGui:Add, Button, x160 y528 w80 h25 gSaveAndReload, 保存
-    Gui, EditGui:Show, w400 h563
-    ; 确保编辑框显示最新内容
-    GuiControl,, DirectoryContent, %PathContent%
-    Send, ^{end}
-Return
-
-; 保存编辑内容并重新加载
-SaveAndReload:
-    Gui, EditGui:Submit, NoHide
-    ; 先删除原有的所有“监听文件夹”记录
-    SQL := "DELETE FROM 分类字典_One WHERE Category_Main='监听文件夹';"
-    SQLiteDB.Exec(SQL)
-    ; 逐行插入新路径
-    Loop, Parse, DirectoryContent, `n, `r
-    {
-        Path := Trim(A_LoopField)
-        if (Path != "")
-        {
-            ; 提取文件夹名称（路径最后一层）
-            SplitPath, Path, FolderName
-            SQL := "INSERT OR IGNORE INTO 分类字典_One (Category_Main, Category_Sub, Record_Value, Flag_Status) "
-                . "VALUES ('监听文件夹', '" . Path . "', '" . FolderName . "', 1);"
-            SQLiteDB.Exec(SQL)
-        }
-    }
-    Gui, EditGui:Destroy
-Return
