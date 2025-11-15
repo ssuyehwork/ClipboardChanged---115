@@ -21,24 +21,28 @@ FolderStates := {}
 WatchDatabaseDir:
     Global SQLiteDB, DBPath, ProcessingContext, TransactionActive, TransactionOwner, FolderStates
     ProcessingContext := "WatchDir"
-    
+    AddDebugLog("WatchDatabaseDir - 开始执行监听...")
+
     if (!CheckDBUnlocked(DBPath)) {
+        AddDebugLog("WatchDatabaseDir - 错误: 数据库被锁定。")
         MsgBox, 16, 错误, 错误 ID：503643 数据库被占用，请稍后再试
         ProcessingContext := ""
         Return
     }
-    
+
     if (!SQLiteDB) {
         SQLiteDB := New SQLiteDB()
         if (!SQLiteDB.OpenDB(DBPath)) {
             ErrorMsg := SQLiteDB._ErrMsg()
+            AddDebugLog("WatchDatabaseDir - 错误: 打开数据库失败 - " . ErrorMsg)
             MsgBox, 16, 错误, 错误 ID：525077 打开数据库失败: %ErrorMsg%
             ProcessingContext := ""
             Return
         }
     }
-    
+
     try {
+        AddDebugLog("WatchDatabaseDir - 正在检查 '注册登记路径' 表...")
         ; === 先检查注册登记路径表的结构 ===
         CheckTableSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='注册登记路径';"
         CheckTableResult := {}
@@ -46,31 +50,69 @@ WatchDatabaseDir:
         if (SQLiteDB.GetTable(CheckTableSQL, CheckTableResult) && CheckTableResult.RowCount > 0) {
             TableExists := true
         }
-        
-        ; 确保注册登记路径表存在（修复：使用 Local_ID）
+
+        ; 确保注册登记路径表存在
         if (!TableExists) {
-            CreateTableSQL := "CREATE TABLE IF NOT EXISTS 注册登记路径 (Local_ID INTEGER PRIMARY KEY AUTOINCREMENT, 标识 TEXT, 文件夹或文件名称 TEXT, 路径 TEXT NOT NULL UNIQUE, 文件夹大小 TEXT, 详细资料 TEXT DEFAULT '', 文件数量 INTEGER, 访问时间 DATETIME DEFAULT (datetime('now', 'localtime')));"
+            AddDebugLog("WatchDatabaseDir - '注册登记路径' 表不存在，正在创建...")
+            CreateTableSQL := "CREATE TABLE IF NOT EXISTS 注册登记路径 (Local_ID INTEGER PRIMARY KEY AUTOINCREMENT, 标识 TEXT, 文件夹或文件名称 TEXT, 路径 TEXT NOT NULL UNIQUE, 文件夹大小 TEXT, 详细资料 TEXT DEFAULT '', 文件数量 INTEGER, 访问时间 DATETIME DEFAULT (datetime('now', 'localtime')), ID INTEGER, 主表名称 TEXT);"
             if (!SQLiteDB.Exec(CreateTableSQL)) {
                 ErrorMsg := SQLiteDB._ErrMsg()
+                AddDebugLog("WatchDatabaseDir - 错误: 创建 '注册登记路径' 表失败 - " . ErrorMsg)
                 MsgBox, 16, 错误, 错误 ID：212116 创建注册登记路径表失败: %ErrorMsg%
                 ProcessingContext := ""
                 Return
             }
+        } else {
+            ; 检查并添加缺失的列
+            PRAGMASQL := "PRAGMA table_info(注册登记路径);"
+            ColumnInfo := {}
+            SQLiteDB.GetTable(PRAGMASQL, ColumnInfo)
+
+            hasIDColumn := false
+            hasMainTableColumn := false
+            Loop, % ColumnInfo.RowCount {
+                if (ColumnInfo.Rows[A_Index][2] = "ID") {
+                    hasIDColumn := true
+                }
+                if (ColumnInfo.Rows[A_Index][2] = "主表名称") {
+                    hasMainTableColumn := true
+                }
+            }
+
+            if (!hasIDColumn) {
+                AddDebugLog("WatchDatabaseDir - '注册登记路径' 表缺少 'ID' 列，正在添加...")
+                AlterTableSQL1 := "ALTER TABLE 注册登记路径 ADD COLUMN ID INTEGER;"
+                if (!SQLiteDB.Exec(AlterTableSQL1)) {
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    AddDebugLog("WatchDatabaseDir - 错误: 添加 'ID' 列失败 - " . ErrorMsg)
+                }
+            }
+
+            if (!hasMainTableColumn) {
+                AddDebugLog("WatchDatabaseDir - '注册登记路径' 表缺少 '主表名称' 列，正在添加...")
+                AlterTableSQL2 := "ALTER TABLE 注册登记路径 ADD COLUMN 主表名称 TEXT;"
+                if (!SQLiteDB.Exec(AlterTableSQL2)) {
+                    ErrorMsg := SQLiteDB._ErrMsg()
+                    AddDebugLog("WatchDatabaseDir - 错误: 添加 '主表名称' 列失败 - " . ErrorMsg)
+                }
+            }
         }
-        
+
         ; 检查Database表
         CheckSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='Database';"
         CheckResult := {}
         if (!SQLiteDB.GetTable(CheckSQL, CheckResult) || CheckResult.RowCount = 0) {
+            AddDebugLog("WatchDatabaseDir - 错误: 'Database' 表不存在。")
             MsgBox, 16, 错误, 错误 ID：212114 Database表不存在
             ProcessingContext := ""
             Return
         }
-        
+
         ; 构建监听目录列表
         dirList := []
         dirList.Push(A_ScriptDir . "\Database")
-        
+        AddDebugLog("WatchDatabaseDir - 添加默认监听目录: " . A_ScriptDir . "\Database")
+
         ; === 从分类字典_One表读取监听文件夹（主要方式）===
         sqlMonitorFolders := "SELECT Category_Sub FROM 分类字典_One WHERE Category_Main = '监听文件夹' AND Flag_Status = 1;"
         ResultMonitor := {}
@@ -89,10 +131,11 @@ WatchDatabaseDir:
                 }
                 if (!found && FileExist(folderPath)) {
                     dirList.Push(folderPath)
+                    AddDebugLog("WatchDatabaseDir - 从 '分类字典_One' 添加监听目录: " . folderPath)
                 }
             }
         }
-        
+
         ; === 兼容旧的属性表（如果还在使用）===
         sqlFolders := "SELECT 属性值 FROM 属性 WHERE 属性格式 = '文件夹路径';"
         ResultFolders := {}
@@ -108,16 +151,20 @@ WatchDatabaseDir:
                 }
                 if (!found && FileExist(folderPath)) {
                     dirList.Push(folderPath)
+                    AddDebugLog("WatchDatabaseDir - 从 '属性' 表添加监听目录: " . folderPath)
                 }
             }
         }
-        
+
+        AddDebugLog("WatchDatabaseDir - 共 " . dirList.Length() . " 个目录待处理。")
         ; 处理所有监听目录
         for dirIndex, dirPath in dirList {
             if (!FileExist(dirPath)) {
+                AddDebugLog("WatchDatabaseDir - 目录不存在，跳过: " . dirPath)
                 continue
             }
-            
+
+            AddDebugLog("WatchDatabaseDir - 正在处理目录: " . dirPath)
             ; 处理子文件夹
             Loop, Files, %dirPath%\*, D R
             {
@@ -125,7 +172,7 @@ WatchDatabaseDir:
                 SB_SetText("正在处理子文件夹: " . item)
                 ProcessSingleFolder(item)
             }
-            
+
             ; 处理直属文件
             Loop, Files, %dirPath%\*, F
             {
@@ -137,14 +184,16 @@ WatchDatabaseDir:
                 }
             }
         }
-        
+
         RegisterAndValidateFolders()
         ValidatePaths()
         FixNullSortValues("")
         SB_SetText("监听处理完成 - 已处理 " . dirList.Length() . " 个监听目录")
-        
+        AddDebugLog("WatchDatabaseDir - 监听处理完成。")
+
     } catch e {
         ErrorMsg := e.Message
+        AddDebugLog("WatchDatabaseDir - 异常: " . ErrorMsg)
         MsgBox, 16, 错误, 错误 ID：503644 WatchDatabaseDir异常: %ErrorMsg%
     } finally {
         if (TransactionActive && TransactionOwner = "WatchDatabaseDir") {
@@ -159,41 +208,48 @@ Return
 ; ===========================================
 ProcessSingleFolder(folderPath) {
     Global SQLiteDB, FolderStates, ProcessingContext
-    
+    AddDebugLog("ProcessSingleFolder - 开始处理文件夹: " . folderPath)
+
     if (!SQLiteDB) {
+        AddDebugLog("ProcessSingleFolder - 错误: 数据库连接未初始化。")
         MsgBox, 16, 错误, 错误 ID：717798 数据库连接未初始化
         Return false
     }
-    
+
     if (!FileExist(folderPath) || !InStr(FileExist(folderPath), "D")) {
+        AddDebugLog("ProcessSingleFolder - 文件夹不存在或不是目录: " . folderPath)
         Return false
     }
-    
+
     folderState := GetFolderState(folderPath)
     SplitPath, folderPath, folderName
     sizeText := FormatSize(folderState.totalSize)
-    
+    AddDebugLog("ProcessSingleFolder - 文件夹状态: " . folderName . ", 大小: " . sizeText . ", 文件数: " . folderState.fileCount)
+
     if (ProcessingContext = "WatchDir") {
         transactionStarted := BeginSafeTransaction("ProcessSingleFolder")
         if (!transactionStarted) {
+            AddDebugLog("ProcessSingleFolder - 错误: 事务开启失败。")
             MsgBox, 16, 错误, 错误 ID：212610 事务开始失败
             Return false
         }
-        
+
         try {
             ; 检查文件夹路径是否已登记
             CheckFolderSQL := "SELECT Local_ID FROM 注册登记路径 WHERE 路径 = ?;"
             CheckFolderResult := {}
             if (!SQLiteDB.GetTable(CheckFolderSQL, CheckFolderResult, [folderPath])) {
                 ErrorMsg := SQLiteDB._ErrMsg()
+                AddDebugLog("ProcessSingleFolder - 错误: 查询文件夹登记状态失败 - " . ErrorMsg)
                 MsgBox, 16, 错误, 错误 ID：212611 查询文件夹失败: %ErrorMsg%
                 RollbackSafeTransaction("ProcessSingleFolder")
                 Return false
             }
-            
+
             if (CheckFolderResult.RowCount = 0) {
+                AddDebugLog("ProcessSingleFolder - 新文件夹，未登记，正在处理: " . folderPath)
                 ; === 路径未登记，需要处理 ===
-                
+
                 ; 1. 先登记路径（Local_ID 自增，不需要手动指定）
                 InsertFolderSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'));"
                 InsertSuccess := false
@@ -207,70 +263,144 @@ ProcessSingleFolder(folderPath) {
                     FallbackSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES ('📁', '" . EscapedFolderName . "', '" . EscapedFolderPath . "', '" . EscapedSizeText . "', '" . EscapedFileList . "', " . folderState.fileCount . ", datetime('now', 'localtime'));"
                     InsertSuccess := SQLiteDB.Exec(FallbackSQL)
                 }
-                
+
                 if (!InsertSuccess) {
                     ErrorMsg := SQLiteDB._ErrMsg()
+                    AddDebugLog("ProcessSingleFolder - 错误: 登记新文件夹失败 - " . ErrorMsg)
                     MsgBox, 16, 错误, 错误 ID：212630 登记文件夹失败: %ErrorMsg%
                     RollbackSafeTransaction("ProcessSingleFolder")
                     Return false
                 }
-                
+
                 ; 2. 保存状态
                 FolderStates[folderPath] := folderState
-                
+
                 ; 3. 同步到Database主表（这才是真正的数据）
                 GlobalFileList := folderPath
                 GlobalComment := folderName
-                if (Gosub_SavePathMerged_Success()) {
+                AddDebugLog("ProcessSingleFolder - 正在同步新文件夹到 Database 表...")
+                newID := SavePathMerged()
+                if (newID > 0) {
                     FolderStates[folderPath].processedTime := A_Now
+                    AddDebugLog("ProcessSingleFolder - 同步成功，获得新ID: " . newID)
+
+                    ; 4. 将新ID更新回注册登记路径表
+                    UpdateLinkSQL := "UPDATE 注册登记路径 SET ID = ?, 主表名称 = 'Database' WHERE 路径 = ?;"
+                    if (!SQLiteDB.ExecuteWithParams(UpdateLinkSQL, [newID, folderPath])) {
+                        ErrorMsg := SQLiteDB._ErrMsg()
+                        AddDebugLog("ProcessSingleFolder - 错误: 关联新文件夹记录ID失败 - " . ErrorMsg)
+                        ; 这是一个警告，不是致命错误，所以不回滚
+                    } else {
+                        AddDebugLog("ProcessSingleFolder - 成功关联ID " . newID . " 到路径 " . folderPath)
+                    }
+                } else {
+                    AddDebugLog("ProcessSingleFolder - 错误: 同步失败，未获得新ID。")
                 }
-                
+
             } else {
-                ; === 路径已登记，只更新登记表的元数据 ===
+                ; === 路径已登记，检查是否需要更新 ===
                 needsUpdate := false
+                oldState := {}
                 if (!FolderStates.HasKey(folderPath)) {
                     needsUpdate := true
+                    AddDebugLog("ProcessSingleFolder - 文件夹已登记，但无缓存状态，需要更新。")
                 } else {
                     oldState := FolderStates[folderPath]
                     if (folderState.fileCount != oldState.fileCount || folderState.totalSize != oldState.totalSize || folderState.lastModified != oldState.lastModified) {
                         needsUpdate := true
+                        AddDebugLog("ProcessSingleFolder - 文件夹状态变化，需要更新。旧状态: " . oldState.fileCount . "个文件, " . oldState.totalSize . "字节。新状态: " . folderState.fileCount . "个文件, " . folderState.totalSize . "字节。")
                     }
                 }
-                
+
                 if (needsUpdate) {
-                    UpdateFolderSQL := "UPDATE 注册登记路径 SET 标识 = ?, 文件夹或文件名称 = ?, 文件夹大小 = ?, 详细资料 = ?, 文件数量 = ?, 访问时间 = datetime('now', 'localtime') WHERE 路径 = ?;"
-                    UpdateSuccess := false
-                    if (SQLiteDB.ExecuteWithParams) {
-                        UpdateSuccess := SQLiteDB.ExecuteWithParams(UpdateFolderSQL, ["📁", folderName, sizeText, folderState.fileList, folderState.fileCount, folderPath])
-                    } else {
-                        EscapedFolderName := StrReplace(folderName, "'", "''")
-                        EscapedSizeText := StrReplace(sizeText, "'", "''")
-                        EscapedFileList := StrReplace(folderState.fileList, "'", "''")
-                        EscapedFolderPath := StrReplace(folderPath, "'", "''")
-                        FallbackSQL := "UPDATE 注册登记路径 SET 标识 = '📁', 文件夹或文件名称 = '" . EscapedFolderName . "', 文件夹大小 = '" . EscapedSizeText . "', 详细资料 = '" . EscapedFileList . "', 文件数量 = " . folderState.fileCount . ", 访问时间 = datetime('now', 'localtime') WHERE 路径 = '" . EscapedFolderPath . "';"
-                        UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
+                    AddDebugLog("ProcessSingleFolder - 正在更新已登记的文件夹信息: " . folderPath)
+
+                    ; 1. 先从登记表获取主表ID
+                    GetIDSQL := "SELECT ID FROM 注册登记路径 WHERE 路径 = ?;"
+                    IDResult := {}
+                    dbID := 0
+                    if (SQLiteDB.GetTable(GetIDSQL, IDResult, [folderPath]) && IDResult.RowCount > 0) {
+                        dbID := IDResult.Rows[1][1]
                     }
-                    
-                    if (!UpdateSuccess) {
-                        ErrorMsg := SQLiteDB._ErrMsg()
+
+                    ; 2. 更新注册登记路径表
+                    UpdateRegisterSQL := "UPDATE 注册登记路径 SET 标识 = ?, 文件夹或文件名称 = ?, 文件夹大小 = ?, 详细资料 = ?, 文件数量 = ?, 访问时间 = datetime('now', 'localtime') WHERE 路径 = ?;"
+                    if (!SQLiteDB.ExecuteWithParams(UpdateRegisterSQL, ["📁", folderName, sizeText, folderState.fileList, folderState.fileCount, folderPath])) {
+                         ErrorMsg := SQLiteDB._ErrMsg()
+                        AddDebugLog("ProcessSingleFolder - 错误: 更新文件夹登记信息失败 - " . ErrorMsg)
                         MsgBox, 16, 错误, 错误 ID：212660 更新文件夹登记失败: %ErrorMsg%
                         RollbackSafeTransaction("ProcessSingleFolder")
                         Return false
                     }
-                    
-                    FolderStates[folderPath] := folderState
+
+                    if (dbID > 0) {
+                        ; 3. 如果有ID，直接更新Database主表
+                        AddDebugLog("ProcessSingleFolder - 找到关联ID: " . dbID . "，正在直接更新 Database 表...")
+                        newHash := Crypt.Hash.Str(folderPath . folderState.totalSize . folderState.fileCount, "SHA256", "UTF-8")
+                        newContent := "[文件夹] 文件数量: " . folderState.fileCount . " | 大小: " . sizeText . "`n" . folderPath
+
+                        UpdateMainDBSQL := "UPDATE Database SET 哈希值 = ?, 字节 = ?, 内容 = ?, 备注 = ?, 标签 = ?, 字符 = ?, 行数 = ?, 数量 = ?, 修改时间 = datetime('now', 'localtime') WHERE ID = ?;"
+                        if (!SQLiteDB.ExecuteWithParams(UpdateMainDBSQL, [newHash, sizeText, newContent, folderName, folderName, folderState.fileCount, folderState.fileCount, folderState.fileCount, dbID])) {
+                            ErrorMsg := SQLiteDB._ErrMsg()
+                            AddDebugLog("ProcessSingleFolder - 错误: 直接更新 Database 表失败 - " . ErrorMsg)
+                            MsgBox, 16, 错误, 错误 ID：212661 更新 Database 表失败: %ErrorMsg%
+                            RollbackSafeTransaction("ProcessSingleFolder")
+                            Return false
+                        } else {
+                             AddDebugLog("ProcessSingleFolder - Database 表更新成功。")
+                             FolderStates[folderPath] := folderState
+                             FolderStates[folderPath].processedTime := A_Now
+                        }
+                    } else {
+                        ; 4. 如果没有ID（旧数据），则回退到删除+插入的逻辑以实现兼容
+                        AddDebugLog("ProcessSingleFolder - 未找到关联ID，回退到删除/插入逻辑。")
+
+                        if (oldState.totalSize) {
+                            oldHash := Crypt.Hash.Str(folderPath . oldState.totalSize . oldState.fileCount, "SHA256", "UTF-8")
+                            DeleteSQL := "DELETE FROM Database WHERE 哈希值 = ?;"
+                            if (!SQLiteDB.ExecuteWithParams(DeleteSQL, [oldHash])) {
+                                ErrorMsg := SQLiteDB._ErrMsg()
+                                AddDebugLog("ProcessSingleFolder - 警告: 删除旧文件夹记录失败 (哈希: " . oldHash . ") - " . ErrorMsg)
+                            } else {
+                                AddDebugLog("ProcessSingleFolder - 已从 Database 表删除旧记录 (哈希: " . oldHash . ")。")
+                            }
+                        }
+
+                        GlobalFileList := folderPath
+                        GlobalComment := folderName
+                        AddDebugLog("ProcessSingleFolder - 正在同步更新后的文件夹到 Database 表...")
+                        newID := SavePathMerged()
+                        if (newID > 0) {
+                            FolderStates[folderPath] := folderState
+                            FolderStates[folderPath].processedTime := A_Now
+                            AddDebugLog("ProcessSingleFolder - 同步成功，获得新ID: " . newID)
+
+                            UpdateLinkSQL := "UPDATE 注册登记路径 SET ID = ?, 主表名称 = 'Database' WHERE 路径 = ?;"
+                            if (!SQLiteDB.ExecuteWithParams(UpdateLinkSQL, [newID, folderPath])) {
+                                ErrorMsg := SQLiteDB._ErrMsg()
+                                AddDebugLog("ProcessSingleFolder - 错误: 关联更新后文件夹记录ID失败 - " . ErrorMsg)
+                            } else {
+                                AddDebugLog("ProcessSingleFolder - 成功关联ID " . newID . " 到路径 " . folderPath)
+                            }
+                        } else {
+                            AddDebugLog("ProcessSingleFolder - 错误: 同步失败，未获得新ID。")
+                        }
+                    }
+                } else {
+                    AddDebugLog("ProcessSingleFolder - 文件夹状态无变化，跳过更新: " . folderPath)
                 }
-                ; 注意：已登记的路径不再同步到Database表，避免重复插入
             }
-            
+
             if (!CommitSafeTransaction("ProcessSingleFolder")) {
                 ErrorMsg := SQLiteDB._ErrMsg()
+                AddDebugLog("ProcessSingleFolder - 错误: 提交事务失败 - " . ErrorMsg)
                 MsgBox, 16, 错误, 错误 ID：212640 提交事务失败: %ErrorMsg%
                 RollbackSafeTransaction("ProcessSingleFolder")
                 Return false
             }
         } catch e {
             ErrorMsg := e.Message
+            AddDebugLog("ProcessSingleFolder - 异常: " . ErrorMsg)
             MsgBox, 16, 错误, 错误 ID：212641 ProcessSingleFolder异常: %ErrorMsg%
             RollbackSafeTransaction("ProcessSingleFolder")
             Return false
@@ -278,7 +408,8 @@ ProcessSingleFolder(folderPath) {
     } else if (ProcessingContext = "Clipboard") {
         ProcessFolderToHistoryTable(folderPath)
     }
-    
+
+    AddDebugLog("ProcessSingleFolder - 处理完成: " . folderPath)
     Return true
 }
 
@@ -287,54 +418,62 @@ ProcessSingleFolder(folderPath) {
 ; ===========================================
 ProcessSingleFile(filePath) {
     Global SQLiteDB, DBPath, FolderStates, ProcessingContext
-    
+    AddDebugLog("ProcessSingleFile - 开始处理文件: " . filePath)
+
     if (!FileExist(filePath) || InStr(FileExist(filePath), "D")) {
+        AddDebugLog("ProcessSingleFile - 文件不存在或为目录: " . filePath)
         Return false
     }
-    
+
     if (!CheckDBUnlocked(DBPath)) {
+        AddDebugLog("ProcessSingleFile - 错误: 数据库被锁定。")
         MsgBox, 16, 错误, 错误 ID：212505 数据库被锁定
         Return false
     }
-    
+
     if (!SQLiteDB) {
         SQLiteDB := New SQLiteDB()
         if (!SQLiteDB.OpenDB(DBPath)) {
             ErrorMsg := SQLiteDB._ErrMsg()
+            AddDebugLog("ProcessSingleFile - 错误: 打开数据库失败 - " . ErrorMsg)
             MsgBox, 16, 错误, 错误 ID：4122461 打开数据库失败: %ErrorMsg%
             Return false
         }
     }
-    
+
     FileGetSize, fileSize, %filePath%
     FileGetTime, fileTime, %filePath%, M
     SplitPath, filePath, fileName, , fileExt
-    
+
     Identifier := GetFileTypeSymbol(filePath, fileExt)
     sizeText := FormatSize(fileSize)
-    
+    AddDebugLog("ProcessSingleFile - 文件状态: " . fileName . ", 大小: " . sizeText)
+
     try {
         if (ProcessingContext = "WatchDir") {
             transactionStarted := BeginSafeTransaction("ProcessSingleFile")
             if (!transactionStarted) {
+                AddDebugLog("ProcessSingleFile - 错误: 事务开启失败。")
                 MsgBox, 16, 错误, 错误 ID：212510 事务开始失败
                 Return false
             }
-            
+
             try {
                 ; 检查文件路径是否已登记
                 CheckFileSQL := "SELECT Local_ID FROM 注册登记路径 WHERE 路径 = ?;"
                 CheckFileResult := {}
                 if (!SQLiteDB.GetTable(CheckFileSQL, CheckFileResult, [filePath])) {
                     ErrorMsg := SQLiteDB._ErrMsg()
+                    AddDebugLog("ProcessSingleFile - 错误: 查询文件登记状态失败 - " . ErrorMsg)
                     MsgBox, 16, 错误, 错误 ID：212511 查询文件失败: %ErrorMsg%
                     RollbackSafeTransaction("ProcessSingleFile")
                     Return false
                 }
-                
+
                 if (CheckFileResult.RowCount = 0) {
+                    AddDebugLog("ProcessSingleFile - 新文件，未登记，正在处理: " . filePath)
                     ; === 路径未登记，需要处理 ===
-                    
+
                     ; 1. 先登记路径（Local_ID 自增，不需要手动指定）
                     InsertFileSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'));"
                     InsertSuccess := false
@@ -348,66 +487,139 @@ ProcessSingleFile(filePath) {
                         FallbackSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES ('" . EscapedIdentifier . "', '" . EscapedFileName . "', '" . EscapedFilePath . "', '" . EscapedSizeText . "', '" . EscapedFilePath . "', 1, datetime('now', 'localtime'));"
                         InsertSuccess := SQLiteDB.Exec(FallbackSQL)
                     }
-                    
+
                     if (!InsertSuccess) {
                         ErrorMsg := SQLiteDB._ErrMsg()
+                        AddDebugLog("ProcessSingleFile - 错误: 登记新文件失败 - " . ErrorMsg)
                         MsgBox, 16, 错误, 错误 ID：212530 登记文件失败: %ErrorMsg%
                         RollbackSafeTransaction("ProcessSingleFile")
                         Return false
                     }
-                    
+
                     ; 2. 保存状态
                     FolderStates[filePath] := {totalSize: fileSize, lastModified: fileTime, fileCount: 1, fileList: filePath}
-                    
+
                     ; 3. 同步到Database主表（这才是真正的数据）
-                    ProcessFileToDatabase(filePath, fileName, fileExt, fileSize)
-                    
+                    AddDebugLog("ProcessSingleFile - 正在同步新文件到 Database 表...")
+                    newID := ProcessFileToDatabase(filePath, fileName, fileExt, fileSize)
+                    if (newID > 0) {
+                        AddDebugLog("ProcessSingleFile - 同步成功，获得新ID: " . newID)
+
+                        ; 4. 将新ID更新回注册登记路径表
+                        UpdateLinkSQL := "UPDATE 注册登记路径 SET ID = ?, 主表名称 = 'Database' WHERE 路径 = ?;"
+                        if (!SQLiteDB.ExecuteWithParams(UpdateLinkSQL, [newID, filePath])) {
+                            ErrorMsg := SQLiteDB._ErrMsg()
+                            AddDebugLog("ProcessSingleFile - 错误: 关联新文件记录ID失败 - " . ErrorMsg)
+                        } else {
+                            AddDebugLog("ProcessSingleFile - 成功关联ID " . newID . " 到路径 " . filePath)
+                        }
+                    } else {
+                        AddDebugLog("ProcessSingleFile - 错误: 同步失败，未获得新ID。")
+                    }
+
                 } else {
-                    ; === 路径已登记，只更新登记表的元数据 ===
+                    ; === 路径已登记，检查是否需要更新 ===
                     needsUpdate := false
+                    oldState := {}
                     if (!FolderStates.HasKey(filePath)) {
                         needsUpdate := true
+                        AddDebugLog("ProcessSingleFile - 文件已登记，但无缓存状态，需要更新。")
                     } else {
                         oldState := FolderStates[filePath]
                         if (fileSize != oldState.totalSize || fileTime != oldState.lastModified) {
                             needsUpdate := true
+                            AddDebugLog("ProcessSingleFile - 文件状态变化，需要更新。旧状态: 大小 " . oldState.totalSize . "字节。新状态: 大小 " . fileSize . "字节。")
                         }
                     }
-                    
+
                     if (needsUpdate) {
-                        UpdateFileSQL := "UPDATE 注册登记路径 SET 标识 = ?, 文件夹或文件名称 = ?, 文件夹大小 = ?, 详细资料 = ?, 文件数量 = 1, 访问时间 = datetime('now', 'localtime') WHERE 路径 = ?;"
-                        UpdateSuccess := false
-                        if (SQLiteDB.ExecuteWithParams) {
-                            UpdateSuccess := SQLiteDB.ExecuteWithParams(UpdateFileSQL, [Identifier, fileName, sizeText, filePath, filePath])
-                        } else {
-                            EscapedIdentifier := StrReplace(Identifier, "'", "''")
-                            EscapedFileName := StrReplace(fileName, "'", "''")
-                            EscapedSizeText := StrReplace(sizeText, "'", "''")
-                            EscapedFilePath := StrReplace(filePath, "'", "''")
-                            FallbackSQL := "UPDATE 注册登记路径 SET 标识 = '" . EscapedIdentifier . "', 文件夹或文件名称 = '" . EscapedFileName . "', 文件夹大小 = '" . EscapedSizeText . "', 详细资料 = '" . EscapedFilePath . "', 文件数量 = 1, 访问时间 = datetime('now', 'localtime') WHERE 路径 = '" . EscapedFilePath . "';"
-                            UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
+                        AddDebugLog("ProcessSingleFile - 正在更新已登记的文件信息: " . filePath)
+
+                        ; 1. 先从登记表获取主表ID
+                        GetIDSQL := "SELECT ID FROM 注册登记路径 WHERE 路径 = ?;"
+                        IDResult := {}
+                        dbID := 0
+                        if (SQLiteDB.GetTable(GetIDSQL, IDResult, [filePath]) && IDResult.RowCount > 0) {
+                            dbID := IDResult.Rows[1][1]
                         }
-                        
-                        if (!UpdateSuccess) {
+
+                        ; 2. 更新注册登记路径表
+                        UpdateRegisterSQL := "UPDATE 注册登记路径 SET 标识 = ?, 文件夹或文件名称 = ?, 文件夹大小 = ?, 详细资料 = ?, 文件数量 = 1, 访问时间 = datetime('now', 'localtime') WHERE 路径 = ?;"
+                        if (!SQLiteDB.ExecuteWithParams(UpdateRegisterSQL, [Identifier, fileName, sizeText, filePath, filePath])) {
                             ErrorMsg := SQLiteDB._ErrMsg()
+                            AddDebugLog("ProcessSingleFile - 错误: 更新文件登记信息失败 - " . ErrorMsg)
                             MsgBox, 16, 错误, 错误 ID：212560 更新文件登记失败: %ErrorMsg%
                             RollbackSafeTransaction("ProcessSingleFile")
                             Return false
                         }
-                        
-                        FolderStates[filePath] := {totalSize: fileSize, lastModified: fileTime, fileCount: 1, fileList: filePath}
+
+                        if (dbID > 0) {
+                            ; 3. 如果有ID，直接更新Database主表
+                            AddDebugLog("ProcessSingleFile - 找到关联ID: " . dbID . "，正在直接更新 Database 表...")
+                            newHash := Crypt.Hash.Str(filePath . fileSize, "SHA256", "UTF-8")
+                            newContent := "[文件] " . fileName . " | 大小: " . sizeText
+                            baseFileName := fileName
+                            if (fileExt != "") {
+                                baseFileName := SubStr(fileName, 1, StrLen(fileName) - StrLen(fileExt) - 1)
+                            }
+
+                            UpdateMainDBSQL := "UPDATE Database SET 哈希值 = ?, 字节 = ?, 内容 = ?, 备注 = ?, 标签 = ?, 修改时间 = datetime('now', 'localtime') WHERE ID = ?;"
+                            if (!SQLiteDB.ExecuteWithParams(UpdateMainDBSQL, [newHash, sizeText, newContent, fileName, baseFileName, dbID])) {
+                                ErrorMsg := SQLiteDB._ErrMsg()
+                                AddDebugLog("ProcessSingleFile - 错误: 直接更新 Database 表失败 - " . ErrorMsg)
+                                MsgBox, 16, 错误, 错误 ID：212561 更新 Database 表失败: %ErrorMsg%
+                                RollbackSafeTransaction("ProcessSingleFile")
+                                Return false
+                            } else {
+                                AddDebugLog("ProcessSingleFile - Database 表更新成功。")
+                                FolderStates[filePath] := {totalSize: fileSize, lastModified: fileTime, fileCount: 1, fileList: filePath}
+                            }
+                        } else {
+                            ; 4. 如果没有ID（旧数据），则回退到删除+插入的逻辑以实现兼容
+                            AddDebugLog("ProcessSingleFile - 未找到关联ID，回退到删除/插入逻辑。")
+
+                            if (oldState.totalSize) {
+                                oldHash := Crypt.Hash.Str(filePath . oldState.totalSize, "SHA256", "UTF-8")
+                                DeleteSQL := "DELETE FROM Database WHERE 哈希值 = ?;"
+                                if (!SQLiteDB.ExecuteWithParams(DeleteSQL, [oldHash])) {
+                                    ErrorMsg := SQLiteDB._ErrMsg()
+                                    AddDebugLog("ProcessSingleFile - 警告: 删除旧文件记录失败 (哈希: " . oldHash . ") - " . ErrorMsg)
+                                } else {
+                                    AddDebugLog("ProcessSingleFile - 已从 Database 表删除旧记录 (哈希: " . oldHash . ")。")
+                                }
+                            }
+
+                            newID := ProcessFileToDatabase(filePath, fileName, fileExt, fileSize)
+                            if (newID > 0) {
+                                FolderStates[filePath] := {totalSize: fileSize, lastModified: fileTime, fileCount: 1, fileList: filePath}
+                                AddDebugLog("ProcessSingleFile - 同步更新成功，获得新ID: " . newID)
+
+                                UpdateLinkSQL := "UPDATE 注册登记路径 SET ID = ?, 主表名称 = 'Database' WHERE 路径 = ?;"
+                                if (!SQLiteDB.ExecuteWithParams(UpdateLinkSQL, [newID, filePath])) {
+                                    ErrorMsg := SQLiteDB._ErrMsg()
+                                    AddDebugLog("ProcessSingleFile - 错误: 关联更新后文件记录ID失败 - " . ErrorMsg)
+                                } else {
+                                    AddDebugLog("ProcessSingleFile - 成功关联ID " . newID . " 到路径 " . filePath)
+                                }
+                            } else {
+                                AddDebugLog("ProcessSingleFile - 错误: 同步更新失败，未获得新ID。")
+                            }
+                        }
+                    } else {
+                        AddDebugLog("ProcessSingleFile - 文件状态无变化，跳过更新: " . filePath)
                     }
-                    ; 注意：已登记的路径不再同步到Database表，避免重复插入
                 }
-                
+
                 if (!CommitSafeTransaction("ProcessSingleFile")) {
                     ErrorMsg := SQLiteDB._ErrMsg()
+                    AddDebugLog("ProcessSingleFile - 错误: 提交事务失败 - " . ErrorMsg)
                     MsgBox, 16, 错误, 错误 ID：212540 提交事务失败: %ErrorMsg%
                     RollbackSafeTransaction("ProcessSingleFile")
                     Return false
                 }
             } catch e {
                 ErrorMsg := e.Message
+                AddDebugLog("ProcessSingleFile - 内部异常: " . ErrorMsg)
                 MsgBox, 16, 错误, 错误 ID：212541 ProcessSingleFile异常: %ErrorMsg%
                 RollbackSafeTransaction("ProcessSingleFile")
                 Return false
@@ -417,12 +629,14 @@ ProcessSingleFile(filePath) {
         }
     } catch e {
         eMessage := e.Message
+        AddDebugLog("ProcessSingleFile - 外部异常: " . eMessage)
         MsgBox, 16, 错误, 错误 ID：212580 ProcessSingleFile异常: %eMessage%
         if (TransactionActive && TransactionOwner = "ProcessSingleFile") {
             RollbackSafeTransaction("ProcessSingleFile")
         }
         Return false
     }
+    AddDebugLog("ProcessSingleFile - 处理完成: " . filePath)
     Return true
 }
 
@@ -478,26 +692,26 @@ GetFolderState(folderPath) {
     state.totalSize := 0
     state.lastModified := 0
     state.fileList := ""
-    
+
     Loop, Files, %folderPath%\*, F
     {
         filePath := A_LoopFileFullPath
         if (FileExist(filePath) && !InStr(FileExist(filePath), "D")) {
             state.fileList .= (state.fileList = "" ? "" : "`n") . filePath
             state.fileCount++
-            
+
             FileGetSize, fileSize, %filePath%
             if (fileSize != "") {
                 state.totalSize += fileSize
             }
-            
+
             FileGetTime, fileTime, %filePath%, M
             if (fileTime > state.lastModified) {
                 state.lastModified := fileTime
             }
         }
     }
-    
+
     Return state
 }
 
@@ -519,17 +733,17 @@ FormatSize(size) {
 ; ===========================================
 ProcessFolderToHistoryTable(folderPath) {
     Global SQLiteDB
-    
+
     SplitPath, folderPath, folderName
     folderState := GetFolderState(folderPath)
     totalSize := folderState.totalSize
     validFiles := folderState.fileCount
     sizeText := FormatSize(totalSize)
-    
+
     WinGet, ActiveID, ID, A
     WinGetTitle, WindowTitle, ahk_id %ActiveID%
     SourceWindow := WindowTitle ? WindowTitle : "未知窗口"
-    
+
     Identifier := "📁"
     Format := "📁"
     Tag := ""
@@ -537,15 +751,15 @@ ProcessFolderToHistoryTable(folderPath) {
     Content := "[文件夹] 文件数量: " . validFiles . " | 大小: " . sizeText . "`n" . folderPath
     Remark := folderName
     HashValue := Crypt.Hash.Str(folderPath . totalSize . validFiles, "SHA256", "UTF-8")
-    
+
     CheckHashSQL := "SELECT 1 FROM 历史数据 WHERE 哈希值 = ? LIMIT 1;"
     CheckHashResult := {}
     if (SQLiteDB.GetTable(CheckHashSQL, CheckHashResult, [HashValue]) && CheckHashResult.RowCount >= 1) {
         Return false
     }
-    
+
     transactionStarted := BeginSafeTransaction("ProcessFolderToHistoryTable")
-    
+
     try {
         InsertSQL := "INSERT INTO 历史数据 (哈希值, 字节, 数据来源窗口, 标签, 标识, 类型) VALUES (?, ?, ?, ?, ?, ?);"
         InsertSuccess := false
@@ -561,7 +775,7 @@ ProcessFolderToHistoryTable(folderPath) {
             FallbackSQL := "INSERT INTO 历史数据 (哈希值, 字节, 数据来源窗口, 标签, 标识, 类型) VALUES ('" . EscapedHashValue . "', '" . EscapedSizeText . "', '" . EscapedSourceWindow . "', '" . EscapedTag . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "');"
             InsertSuccess := SQLiteDB.Exec(FallbackSQL)
         }
-        
+
         if (!InsertSuccess) {
             ErrorMsg := SQLiteDB._ErrMsg()
             if (transactionStarted) {
@@ -569,7 +783,7 @@ ProcessFolderToHistoryTable(folderPath) {
             }
             Return false
         }
-        
+
         LastID := 0
         if (SQLiteDB.GetTable("SELECT last_insert_rowid();", Result)) {
             LastID := Result.Rows[1][1]
@@ -580,7 +794,7 @@ ProcessFolderToHistoryTable(folderPath) {
             }
             Return false
         }
-        
+
         UpdateSQL := "UPDATE 历史数据 SET 备注 = ?, 内容 = ?, [路径/链接] = ?, 修改时间 = datetime('now', 'localtime') WHERE ID = ?;"
         UpdateSuccess := false
         if (SQLiteDB.ExecuteWithParams) {
@@ -592,7 +806,7 @@ ProcessFolderToHistoryTable(folderPath) {
             FallbackSQL := "UPDATE 历史数据 SET 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', [路径/链接] = '" . EscapedPathOrLink . "', 修改时间 = datetime('now', 'localtime') WHERE ID = " . LastID . ";"
             UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
         }
-        
+
         if (!UpdateSuccess) {
             ErrorMsg := SQLiteDB._ErrMsg()
             if (transactionStarted) {
@@ -600,13 +814,13 @@ ProcessFolderToHistoryTable(folderPath) {
             }
             Return false
         }
-        
+
         if (transactionStarted && !CommitSafeTransaction("ProcessFolderToHistoryTable")) {
             ErrorMsg := SQLiteDB._ErrMsg()
             RollbackSafeTransaction("ProcessFolderToHistoryTable")
             Return false
         }
-        
+
         SB_SetText("已保存文件夹到历史数据表 - 文件夹: " . folderName)
     } catch e {
         ErrorMsg := e.message
@@ -615,7 +829,7 @@ ProcessFolderToHistoryTable(folderPath) {
         }
         Return false
     }
-    
+
     Return true
 }
 
@@ -624,30 +838,30 @@ ProcessFolderToHistoryTable(folderPath) {
 ; ===========================================
 ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
     Global SQLiteDB
-    
+
     sizeText := FormatSize(fileSize)
     Identifier := GetFileTypeSymbol(filePath, fileExt)
     musicExts := "mp3,aac,m4a,ogg,flac,alac,ape,wav,aiff,dsf,dff,mid"
     Format := (InStr(musicExts, fileExt) || (fileExt = "m4a" && InStr(filePath, "ALAC"))) ? ("📎, " . Identifier . ", " . fileExt) : ("📎, " . (fileExt ? fileExt : "unknown"))
-    
+
     WinGet, ActiveID, ID, A
     WinGetTitle, WindowTitle, ahk_id %ActiveID%
     SourceWindow := WindowTitle ? WindowTitle : "未知窗口"
-    
+
     Tag := ""
     PathOrLink := filePath
     Content := "[文件] " . fileName . " | 大小: " . sizeText
     Remark := fileName
     HashValue := Crypt.Hash.Str(filePath . fileSize, "SHA256", "UTF-8")
-    
+
     CheckHashSQL := "SELECT 1 FROM 历史数据 WHERE 哈希值 = ? LIMIT 1;"
     CheckHashResult := {}
     if (SQLiteDB.GetTable(CheckHashSQL, CheckHashResult, [HashValue]) && CheckHashResult.RowCount >= 1) {
         Return false
     }
-    
+
     transactionStarted := BeginSafeTransaction("ProcessFileToHistoryTable")
-    
+
     try {
         InsertSQL := "INSERT INTO 历史数据 (哈希值, 字节, 数据来源窗口, 标签, 标识, 类型) VALUES (?, ?, ?, ?, ?, ?);"
         InsertSuccess := false
@@ -663,7 +877,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
             FallbackSQL := "INSERT INTO 历史数据 (哈希值, 字节, 数据来源窗口, 标签, 标识, 类型) VALUES ('" . EscapedHashValue . "', '" . EscapedSizeText . "', '" . EscapedSourceWindow . "', '" . EscapedTag . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "');"
             InsertSuccess := SQLiteDB.Exec(FallbackSQL)
         }
-        
+
         if (!InsertSuccess) {
             ErrorMsg := SQLiteDB._ErrMsg()
             if (transactionStarted) {
@@ -671,7 +885,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
             }
             Return false
         }
-        
+
         LastID := 0
         if (SQLiteDB.GetTable("SELECT last_insert_rowid();", Result)) {
             LastID := Result.Rows[1][1]
@@ -682,7 +896,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
             }
             Return false
         }
-        
+
         UpdateSQL := "UPDATE 历史数据 SET 备注 = ?, 内容 = ?, [路径/链接] = ?, 修改时间 = datetime('now', 'localtime') WHERE ID = ?;"
         UpdateSuccess := false
         if (SQLiteDB.ExecuteWithParams) {
@@ -694,7 +908,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
             FallbackSQL := "UPDATE 历史数据 SET 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', [路径/链接] = '" . EscapedPathOrLink . "', 修改时间 = datetime('now', 'localtime') WHERE ID = " . LastID . ";"
             UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
         }
-        
+
         if (!UpdateSuccess) {
             ErrorMsg := SQLiteDB._ErrMsg()
             if (transactionStarted) {
@@ -702,13 +916,13 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
             }
             Return false
         }
-        
+
         if (transactionStarted && !CommitSafeTransaction("ProcessFileToHistoryTable")) {
             ErrorMsg := SQLiteDB._ErrMsg()
             RollbackSafeTransaction("ProcessFileToHistoryTable")
             Return false
         }
-        
+
         SB_SetText("已保存文件到历史数据表 - 文件: " . fileName)
     } catch e {
         ErrorMsg := e.message
@@ -717,7 +931,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
         }
         Return false
     }
-    
+
     Return true
 }
 
@@ -726,7 +940,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
 ; ===========================================
 ProcessFileToDatabase(filePath, fileName, fileExt, fileSize) {
     Global SQLiteDB, FolderStates
-    
+
     sizeText := FormatSize(fileSize)
     Identifier := GetFileTypeSymbol(filePath, fileExt)
     musicExts := "mp3,aac,m4a,ogg,flac,alac,ape,wav,aiff,dsf,dff,mid"
@@ -740,21 +954,23 @@ ProcessFileToDatabase(filePath, fileName, fileExt, fileSize) {
     }
     comment := fileName
     HashValue := Crypt.Hash.Str(filePath . fileSize, "SHA256", "UTF-8")
-    
+
     baseFileName := fileName
     if (fileExt != "") {
         baseFileName := SubStr(fileName, 1, StrLen(fileName) - StrLen(fileExt) - 1)
     }
-    
-    CheckHashSQL := "SELECT 1 FROM Database WHERE 哈希值 = ? LIMIT 1;"
+
+    CheckHashSQL := "SELECT ID FROM Database WHERE 哈希值 = ? LIMIT 1;"
     CheckHashResult := {}
     if (SQLiteDB.GetTable(CheckHashSQL, CheckHashResult, [HashValue]) && CheckHashResult.RowCount >= 1) {
-        SB_SetText("文件内容已存在，跳过插入: " . fileName)
-        Return false
+        existingID := CheckHashResult.Rows[1][1]
+        SB_SetText("文件内容已存在 (ID: " . existingID . ")，跳过插入，直接关联。")
+        AddDebugLog("ProcessFileToDatabase - 哈希值 " . HashValue . " 已存在，对应ID: " . existingID . "。跳过插入。")
+        Return existingID
     }
-    
+
     transactionStarted := BeginSafeTransaction("ProcessFileToDatabase_Insert")
-    
+
     InsertSQL := "INSERT INTO Database (哈希值, 字节, 标签, 标识, 类型, 分组, 备注, 内容, 字符, 行数, 数量, 收藏, 禁删, 创建时间, 修改时间) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 1, datetime('now', 'localtime'), datetime('now', 'localtime'));"
     InsertSuccess := false
     if (SQLiteDB.ExecuteWithParams) {
@@ -771,51 +987,51 @@ ProcessFileToDatabase(filePath, fileName, fileExt, fileSize) {
         FallbackSQL := "INSERT INTO Database (哈希值, 字节, 标签, 标识, 类型, 分组, 备注, 内容, 字符, 行数, 数量, 收藏, 禁删, 创建时间, 修改时间) VALUES ('" . EscapedHashValue . "', '" . EscapedSizeText . "', '" . EscapedBaseFileName . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', '" . EscapedGroupName . "', '" . EscapedComment . "', '" . EscapedTextPreview . "', 1, 1, 1, 1, 1, datetime('now', 'localtime'), datetime('now', 'localtime'));"
         InsertSuccess := SQLiteDB.Exec(FallbackSQL)
     }
-    
+
     if (!InsertSuccess) {
         ErrorMsg := SQLiteDB._ErrMsg()
         MsgBox, 16, 错误, 错误 ID：212552 %ErrorMsg%
         if (transactionStarted) {
             RollbackSafeTransaction("ProcessFileToDatabase_Insert")
         }
-        Return false
+        Return 0
     }
-    
+
+    LastID := 0
+    if (SQLiteDB.GetTable("SELECT last_insert_rowid();", Result)) {
+        LastID := Result.Rows[1][1]
+    }
+
     if (transactionStarted && !CommitSafeTransaction("ProcessFileToDatabase_Insert")) {
         ErrorMsg := SQLiteDB._ErrMsg()
         MsgBox, 16, 错误, 错误 ID：212553
         RollbackSafeTransaction("ProcessFileToDatabase_Insert")
-        Return false
+        Return 0
     }
-    
+
     SB_SetText("已保存文件记录 - 文件: " . fileName)
-    Return true
+    Return LastID
 }
 
 ; ===========================================
-; SavePathMerged标签（保留原有逻辑）
+; SavePathMerged函数（保留原有逻辑）
 ; ===========================================
-SavePathMerged:
+SavePathMerged() {
     Global SQLiteDB, ClipboardLock, retryCount, GlobalFileList, GlobalComment
+
+    ; 这个函数现在不再处理定时重试逻辑，调用方需要确保在调用前ClipboardLock是解锁的
     if (ClipboardLock) {
-        if (retryCount < 3) {
-            retryCount++
-            SetTimer, RetrySavePathMerged, -200
-            Return
-        }
-        retryCount := 0
-        ClipboardLock := 0
-        Return
+        AddDebugLog("SavePathMerged - 警告: ClipboardLock 已被锁定，跳过执行。")
+        Return 0
     }
     ClipboardLock := 1
-    retryCount := 0
 
     folderPath := GlobalFileList
     GlobalFileList := ""
 
     if (folderPath = "" || !InStr(FileExist(folderPath), "D")) {
         ClipboardLock := 0
-        Return
+        Return 0
     }
 
     SplitPath, folderPath, folderName
@@ -835,12 +1051,14 @@ SavePathMerged:
     comment := GlobalComment ? GlobalComment : folderName
     HashValue := Crypt.Hash.Str(folderPath . totalSize . validFiles, "SHA256", "UTF-8")
 
-    CheckHashSQL := "SELECT 1 FROM Database WHERE 哈希值 = ? LIMIT 1;"
+    CheckHashSQL := "SELECT ID FROM Database WHERE 哈希值 = ? LIMIT 1;"
     CheckHashResult := {}
     if (SQLiteDB.GetTable(CheckHashSQL, CheckHashResult, [HashValue]) && CheckHashResult.RowCount >= 1) {
-        SB_SetText("文件夹内容已存在，跳过插入: " . folderName)
+        existingID := CheckHashResult.Rows[1][1]
+        SB_SetText("文件夹内容已存在 (ID: " . existingID . ")，跳过插入，直接关联。")
+        AddDebugLog("SavePathMerged - 哈希值 " . HashValue . " 已存在，对应ID: " . existingID . "。跳过插入。")
         ClipboardLock := 0
-        Return
+        Return existingID
     }
 
     transactionStarted := BeginSafeTransaction("SavePathMerged_Insert")
@@ -869,7 +1087,12 @@ SavePathMerged:
             RollbackSafeTransaction("SavePathMerged_Insert")
         }
         ClipboardLock := 0
-        Return
+        Return 0
+    }
+
+    LastID := 0
+    if (SQLiteDB.GetTable("SELECT last_insert_rowid();", Result)) {
+        LastID := Result.Rows[1][1]
     }
 
     if (transactionStarted && !CommitSafeTransaction("SavePathMerged_Insert")) {
@@ -877,16 +1100,12 @@ SavePathMerged:
         MsgBox, 16, 错误, 错误 ID：212209
         RollbackSafeTransaction("SavePathMerged_Insert")
         ClipboardLock := 0
-        Return
+        Return 0
     }
 
     SB_SetText("已保存文件夹记录 - 文件夹: " . folderName)
     ClipboardLock := 0
-Return
 
-Gosub_SavePathMerged_Success() {
-    Global
-    ErrorLevel := 0
-    Gosub, SavePathMerged
-    Return !ErrorLevel
+    ; 返回新插入的记录ID
+    Return LastID
 }
