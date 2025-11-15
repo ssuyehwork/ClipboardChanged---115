@@ -20,13 +20,13 @@ Global TransactionOwner := ""
 WatchDatabaseDir:
     Global SQLiteDB, DBPath, ProcessingContext, TransactionActive, TransactionOwner, FolderStates
     ProcessingContext := "WatchDir"
-    
+
     if (!CheckDBUnlocked(DBPath)) {
         MsgBox, 16, 错误, 错误 ID：503643 数据库被占用，请稍后再试
         ProcessingContext := ""
         Return
     }
-    
+
     if (!SQLiteDB) {
         SQLiteDB := New SQLiteDB()
         if (!SQLiteDB.OpenDB(DBPath)) {
@@ -36,7 +36,7 @@ WatchDatabaseDir:
             Return
         }
     }
-    
+
     try {
         ; 确保注册登记路径表存在
         CreateTableSQL := "CREATE TABLE IF NOT EXISTS 注册登记路径 (id INTEGER PRIMARY KEY AUTOINCREMENT, 标识 TEXT, 文件夹或文件名称 TEXT, 路径 TEXT NOT NULL UNIQUE, 文件夹大小 TEXT, 详细资料 TEXT DEFAULT '', 文件数量 INTEGER, 访问时间 DATETIME DEFAULT (datetime('now', 'localtime')));"
@@ -46,7 +46,7 @@ WatchDatabaseDir:
             ProcessingContext := ""
             Return
         }
-        
+
         CheckSQL := "SELECT name FROM sqlite_master WHERE type='table' AND name='Database';"
         CheckResult := {}
         if (!SQLiteDB.GetTable(CheckSQL, CheckResult) || CheckResult.RowCount = 0) {
@@ -54,7 +54,7 @@ WatchDatabaseDir:
             ProcessingContext := ""
             Return
         }
-        
+
         GetColumnsSQL := "PRAGMA table_info(Database);"
         ColumnsResult := {}
         RequiredFields := ["ID", "备注", "内容", "哈希值", "字节", "字符", "行数", "数量", "收藏", "禁删", "创建时间", "修改时间", "标识"]
@@ -81,11 +81,11 @@ WatchDatabaseDir:
             ProcessingContext := ""
             Return
         }
-        
+
         dirList := []
         dirList.Push(A_ScriptDir . "\Database")
-        
-        sqlFolders := "SELECT 属性值 FROM 属性 WHERE 属性格式 = '文件夹路径';"
+
+        sqlFolders := "SELECT Category_Sub FROM 分类字典_One WHERE Category_Main='监听文件夹';"
         ResultFolders := {}
         if (SQLiteDB.GetTable(sqlFolders, ResultFolders) && ResultFolders.RowCount >= 1) {
             Loop, % ResultFolders.RowCount {
@@ -102,7 +102,7 @@ WatchDatabaseDir:
                 }
             }
         }
-        
+
         for dirIndex, dirPath in dirList {
             if (!FileExist(dirPath)) {
                 continue
@@ -123,12 +123,12 @@ WatchDatabaseDir:
                 }
             }
         }
-        
+
         RegisterAndValidateFolders()
         ValidatePaths()
         FixNullSortValues("")
         SB_SetText("监听处理完成 - 已处理 " . dirList.Length() . " 个监听目录")
-        
+
     } catch e {
         ErrorMsg := e.Message
         MsgBox, 16, 错误, 错误 ID：503644 WatchDatabaseDir异常: %ErrorMsg%
@@ -184,16 +184,16 @@ RegisterAndValidateFolders() {
 
 ProcessSingleFolder(folderPath) {
     Global SQLiteDB, FolderStates, ProcessingContext
-    
+
     if (!SQLiteDB) {
         MsgBox, 16, 错误, 错误 ID：717798 数据库连接未初始化
         Return false
     }
-    
+
     if (!FileExist(folderPath) || !InStr(FileExist(folderPath), "D")) {
         Return false
     }
-    
+
     TestSQL := "SELECT 1;"
     TestResult := {}
     if (!SQLiteDB.GetTable(TestSQL, TestResult)) {
@@ -201,18 +201,18 @@ ProcessSingleFolder(folderPath) {
         MsgBox, 16, 错误, 错误 ID：343470 数据库连接异常: %ErrorMsg%
         Return false
     }
-    
+
     folderState := GetFolderState(folderPath)
     SplitPath, folderPath, folderName
     sizeText := FormatSize(folderState.totalSize)
-    
+
     if (ProcessingContext = "WatchDir") {
         transactionStarted := BeginSafeTransaction("ProcessSingleFolder")
         if (!transactionStarted) {
             MsgBox, 16, 错误, 错误 ID：212610 事务开始失败
             Return false
         }
-        
+
         try {
             CheckFolderSQL := "SELECT id FROM 注册登记路径 WHERE 路径 = ?;"
             CheckFolderResult := {}
@@ -222,7 +222,7 @@ ProcessSingleFolder(folderPath) {
                 RollbackSafeTransaction("ProcessSingleFolder")
                 Return false
             }
-            
+
             if (CheckFolderResult.RowCount = 0) {
                 InsertFolderSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'));"
                 InsertSuccess := false
@@ -236,7 +236,7 @@ ProcessSingleFolder(folderPath) {
                     FallbackSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES ('📁', '" . EscapedFolderName . "', '" . EscapedFolderPath . "', '" . EscapedSizeText . "', '" . EscapedFileList . "', " . folderState.fileCount . ", datetime('now', 'localtime'));"
                     InsertSuccess := SQLiteDB.Exec(FallbackSQL)
                 }
-                
+
                 if (!InsertSuccess) {
                     ErrorMsg := SQLiteDB._ErrMsg()
                     MsgBox, 16, 错误, 错误 ID：212630 插入文件夹失败: %ErrorMsg%
@@ -253,7 +253,7 @@ ProcessSingleFolder(folderPath) {
                         needsUpdate := true
                     }
                 }
-                
+
                 if (needsUpdate) {
                     UpdateFolderSQL := "UPDATE 注册登记路径 SET 标识 = ?, 文件夹或文件名称 = ?, 文件夹大小 = ?, 详细资料 = ?, 文件数量 = ?, 访问时间 = datetime('now', 'localtime') WHERE 路径 = ?;"
                     UpdateSuccess := false
@@ -267,16 +267,16 @@ ProcessSingleFolder(folderPath) {
                         FallbackSQL := "UPDATE 注册登记路径 SET 标识 = '📁', 文件夹或文件名称 = '" . EscapedFolderName . "', 文件夹大小 = '" . EscapedSizeText . "', 详细资料 = '" . EscapedFileList . "', 文件数量 = " . folderState.fileCount . ", 访问时间 = datetime('now', 'localtime') WHERE 路径 = '" . EscapedFolderPath . "';"
                         UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
                     }
-                    
+
                     if (!UpdateSuccess) {
                         ErrorMsg := SQLiteDB._ErrMsg()
                         MsgBox, 16, 错误, 错误 ID：212660 更新文件夹失败: %ErrorMsg%
                         RollbackSafeTransaction("ProcessSingleFolder")
                         Return false
                     }
-                    
+
                     FolderStates[folderPath] := folderState
-                    
+
                     GlobalFileList := folderPath
                     GlobalComment := folderName
                     if (Gosub_SavePathMerged_Success()) {
@@ -284,7 +284,7 @@ ProcessSingleFolder(folderPath) {
                     }
                 }
             }
-            
+
             if (!CommitSafeTransaction("ProcessSingleFolder")) {
                 ErrorMsg := SQLiteDB._ErrMsg()
                 MsgBox, 16, 错误, 错误 ID：212640 提交事务失败: %ErrorMsg%
@@ -300,22 +300,22 @@ ProcessSingleFolder(folderPath) {
     } else if (ProcessingContext = "Clipboard") {
         ProcessFolderToHistoryTable(folderPath)
     }
-    
+
     Return true
 }
 
 ProcessSingleFile(filePath) {
     Global SQLiteDB, DBPath, FolderStates, ProcessingContext
-    
+
     if (!FileExist(filePath) || InStr(FileExist(filePath), "D")) {
         Return false
     }
-    
+
     if (!CheckDBUnlocked(DBPath)) {
         MsgBox, 16, 错误, 错误 ID：212505 数据库被锁定
         Return false
     }
-    
+
     if (!SQLiteDB) {
         SQLiteDB := New SQLiteDB()
         if (!SQLiteDB.OpenDB(DBPath)) {
@@ -324,14 +324,14 @@ ProcessSingleFile(filePath) {
             Return false
         }
     }
-    
+
     FileGetSize, fileSize, %filePath%
     FileGetTime, fileTime, %filePath%, M
     SplitPath, filePath, fileName, , fileExt
-    
+
     Identifier := GetFileTypeSymbol(filePath, fileExt)
     sizeText := FormatSize(fileSize)
-    
+
     try {
         if (ProcessingContext = "WatchDir") {
             transactionStarted := BeginSafeTransaction("ProcessSingleFile")
@@ -339,7 +339,7 @@ ProcessSingleFile(filePath) {
                 MsgBox, 16, 错误, 错误 ID：212510 事务开始失败
                 Return false
             }
-            
+
             try {
                 CheckFileSQL := "SELECT id FROM 注册登记路径 WHERE 路径 = ?;"
                 CheckFileResult := {}
@@ -349,7 +349,7 @@ ProcessSingleFile(filePath) {
                     RollbackSafeTransaction("ProcessSingleFile")
                     Return false
                 }
-                
+
                 if (CheckFileResult.RowCount = 0) {
                     InsertFileSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'));"
                     InsertSuccess := false
@@ -363,7 +363,7 @@ ProcessSingleFile(filePath) {
                         FallbackSQL := "INSERT INTO 注册登记路径 (标识, 文件夹或文件名称, 路径, 文件夹大小, 详细资料, 文件数量, 访问时间) VALUES ('" . EscapedIdentifier . "', '" . EscapedFileName . "', '" . EscapedFilePath . "', '" . EscapedSizeText . "', '" . EscapedFilePath . "', 1, datetime('now', 'localtime'));"
                         InsertSuccess := SQLiteDB.Exec(FallbackSQL)
                     }
-                    
+
                     if (!InsertSuccess) {
                         ErrorMsg := SQLiteDB._ErrMsg()
                         MsgBox, 16, 错误, 错误 ID：212530 插入文件失败: %ErrorMsg%
@@ -380,7 +380,7 @@ ProcessSingleFile(filePath) {
                             needsUpdate := true
                         }
                     }
-                    
+
                     if (needsUpdate) {
                         UpdateFileSQL := "UPDATE 注册登记路径 SET 标识 = ?, 文件夹或文件名称 = ?, 文件夹大小 = ?, 详细资料 = ?, 文件数量 = 1, 访问时间 = datetime('now', 'localtime') WHERE 路径 = ?;"
                         UpdateSuccess := false
@@ -394,20 +394,20 @@ ProcessSingleFile(filePath) {
                             FallbackSQL := "UPDATE 注册登记路径 SET 标识 = '" . EscapedIdentifier . "', 文件夹或文件名称 = '" . EscapedFileName . "', 文件夹大小 = '" . EscapedSizeText . "', 详细资料 = '" . EscapedFilePath . "', 文件数量 = 1, 访问时间 = datetime('now', 'localtime') WHERE 路径 = '" . EscapedFilePath . "';"
                             UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
                         }
-                        
+
                         if (!UpdateSuccess) {
                             ErrorMsg := SQLiteDB._ErrMsg()
                             MsgBox, 16, 错误, 错误 ID：212560 更新文件失败: %ErrorMsg%
                             RollbackSafeTransaction("ProcessSingleFile")
                             Return false
                         }
-                        
+
                         FolderStates[filePath] := {totalSize: fileSize, lastModified: fileTime, fileCount: 1, fileList: filePath}
-                        
+
                         ProcessFileToDatabase(filePath, fileName, fileExt, fileSize)
                     }
                 }
-                
+
                 if (!CommitSafeTransaction("ProcessSingleFile")) {
                     ErrorMsg := SQLiteDB._ErrMsg()
                     MsgBox, 16, 错误, 错误 ID：212540 提交事务失败: %ErrorMsg%
@@ -438,17 +438,17 @@ ProcessSingleFile(filePath) {
 
 ProcessFolderToHistoryTable(folderPath) {
     Global SQLiteDB
-    
+
     SplitPath, folderPath, folderName
     folderState := GetFolderState(folderPath)
     totalSize := folderState.totalSize
     validFiles := folderState.fileCount
     sizeText := FormatSize(totalSize)
-    
+
     WinGet, ActiveID, ID, A
     WinGetTitle, WindowTitle, ahk_id %ActiveID%
     SourceWindow := WindowTitle ? WindowTitle : "未知窗口"
-    
+
     Identifier := "📁"
     Format := "📁"
     Tag := ""
@@ -456,15 +456,15 @@ ProcessFolderToHistoryTable(folderPath) {
     Content := "[文件夹] 文件数量: " . validFiles . " | 大小: " . sizeText . "`n" . folderPath
     Remark := folderName
     HashValue := Crypt.Hash.Str(folderPath . totalSize . validFiles, "SHA256", "UTF-8")
-    
+
     CheckHashSQL := "SELECT 1 FROM 历史数据 WHERE 哈希值 = ? LIMIT 1;"
     CheckHashResult := {}
     if (SQLiteDB.GetTable(CheckHashSQL, CheckHashResult, [HashValue]) && CheckHashResult.RowCount >= 1) {
         Return false
     }
-    
+
     transactionStarted := BeginSafeTransaction("ProcessFolderToHistoryTable")
-    
+
     try {
         InsertSQL := "INSERT INTO 历史数据 (哈希值, 字节, 数据来源窗口, 标签, 标识, 类型) VALUES (?, ?, ?, ?, ?, ?);"
         InsertSuccess := false
@@ -480,7 +480,7 @@ ProcessFolderToHistoryTable(folderPath) {
             FallbackSQL := "INSERT INTO 历史数据 (哈希值, 字节, 数据来源窗口, 标签, 标识, 类型) VALUES ('" . EscapedHashValue . "', '" . EscapedSizeText . "', '" . EscapedSourceWindow . "', '" . EscapedTag . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "');"
             InsertSuccess := SQLiteDB.Exec(FallbackSQL)
         }
-        
+
         if (!InsertSuccess) {
             ErrorMsg := SQLiteDB._ErrMsg()
             if (transactionStarted) {
@@ -488,7 +488,7 @@ ProcessFolderToHistoryTable(folderPath) {
             }
             Return false
         }
-        
+
         LastID := 0
         if (SQLiteDB.GetTable("SELECT last_insert_rowid();", Result)) {
             LastID := Result.Rows[1][1]
@@ -499,7 +499,7 @@ ProcessFolderToHistoryTable(folderPath) {
             }
             Return false
         }
-        
+
         UpdateSQL := "UPDATE 历史数据 SET 备注 = ?, 内容 = ?, [路径/链接] = ?, 修改时间 = datetime('now', 'localtime') WHERE ID = ?;"
         UpdateSuccess := false
         if (SQLiteDB.ExecuteWithParams) {
@@ -511,7 +511,7 @@ ProcessFolderToHistoryTable(folderPath) {
             FallbackSQL := "UPDATE 历史数据 SET 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', [路径/链接] = '" . EscapedPathOrLink . "', 修改时间 = datetime('now', 'localtime') WHERE ID = " . LastID . ";"
             UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
         }
-        
+
         if (!UpdateSuccess) {
             ErrorMsg := SQLiteDB._ErrMsg()
             if (transactionStarted) {
@@ -519,13 +519,13 @@ ProcessFolderToHistoryTable(folderPath) {
             }
             Return false
         }
-        
+
         if (transactionStarted && !CommitSafeTransaction("ProcessFolderToHistoryTable")) {
             ErrorMsg := SQLiteDB._ErrMsg()
             RollbackSafeTransaction("ProcessFolderToHistoryTable")
             Return false
         }
-        
+
         SB_SetText("已保存文件夹到历史数据表 - 文件夹: " . folderName)
     } catch e {
         ErrorMsg := e.message
@@ -534,36 +534,36 @@ ProcessFolderToHistoryTable(folderPath) {
         }
         Return false
     }
-    
+
     Return true
 }
 
 ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
     Global SQLiteDB
-    
+
     sizeText := FormatSize(fileSize)
     Identifier := GetFileTypeSymbol(filePath, fileExt)
     musicExts := "mp3,aac,m4a,ogg,flac,alac,ape,wav,aiff,dsf,dff,mid"
     Format := (InStr(musicExts, fileExt) || (fileExt = "m4a" && InStr(filePath, "ALAC"))) ? ("📎, " . Identifier . ", " . fileExt) : ("📎, " . (fileExt ? fileExt : "unknown"))
-    
+
     WinGet, ActiveID, ID, A
     WinGetTitle, WindowTitle, ahk_id %ActiveID%
     SourceWindow := WindowTitle ? WindowTitle : "未知窗口"
-    
+
     Tag := ""
     PathOrLink := filePath
     Content := "[文件] " . fileName . " | 大小: " . sizeText
     Remark := fileName
     HashValue := Crypt.Hash.Str(filePath . fileSize, "SHA256", "UTF-8")
-    
+
     CheckHashSQL := "SELECT 1 FROM 历史数据 WHERE 哈希值 = ? LIMIT 1;"
     CheckHashResult := {}
     if (SQLiteDB.GetTable(CheckHashSQL, CheckHashResult, [HashValue]) && CheckHashResult.RowCount >= 1) {
         Return false
     }
-    
+
     transactionStarted := BeginSafeTransaction("ProcessFileToHistoryTable")
-    
+
     try {
         InsertSQL := "INSERT INTO 历史数据 (哈希值, 字节, 数据来源窗口, 标签, 标识, 类型) VALUES (?, ?, ?, ?, ?, ?);"
         InsertSuccess := false
@@ -579,7 +579,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
             FallbackSQL := "INSERT INTO 历史数据 (哈希值, 字节, 数据来源窗口, 标签, 标识, 类型) VALUES ('" . EscapedHashValue . "', '" . EscapedSizeText . "', '" . EscapedSourceWindow . "', '" . EscapedTag . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "');"
             InsertSuccess := SQLiteDB.Exec(FallbackSQL)
         }
-        
+
         if (!InsertSuccess) {
             ErrorMsg := SQLiteDB._ErrMsg()
             if (transactionStarted) {
@@ -587,7 +587,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
             }
             Return false
         }
-        
+
         LastID := 0
         if (SQLiteDB.GetTable("SELECT last_insert_rowid();", Result)) {
             LastID := Result.Rows[1][1]
@@ -598,7 +598,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
             }
             Return false
         }
-        
+
         UpdateSQL := "UPDATE 历史数据 SET 备注 = ?, 内容 = ?, [路径/链接] = ?, 修改时间 = datetime('now', 'localtime') WHERE ID = ?;"
         UpdateSuccess := false
         if (SQLiteDB.ExecuteWithParams) {
@@ -610,7 +610,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
             FallbackSQL := "UPDATE 历史数据 SET 备注 = '" . EscapedRemark . "', 内容 = '" . EscapedContent . "', [路径/链接] = '" . EscapedPathOrLink . "', 修改时间 = datetime('now', 'localtime') WHERE ID = " . LastID . ";"
             UpdateSuccess := SQLiteDB.Exec(FallbackSQL)
         }
-        
+
         if (!UpdateSuccess) {
             ErrorMsg := SQLiteDB._ErrMsg()
             if (transactionStarted) {
@@ -618,13 +618,13 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
             }
             Return false
         }
-        
+
         if (transactionStarted && !CommitSafeTransaction("ProcessFileToHistoryTable")) {
             ErrorMsg := SQLiteDB._ErrMsg()
             RollbackSafeTransaction("ProcessFileToHistoryTable")
             Return false
         }
-        
+
         SB_SetText("已保存文件到历史数据表 - 文件: " . fileName)
     } catch e {
         ErrorMsg := e.message
@@ -633,7 +633,7 @@ ProcessFileToHistoryTable(filePath, fileName, fileExt, fileSize) {
         }
         Return false
     }
-    
+
     Return true
 }
 
@@ -643,26 +643,26 @@ GetFolderState(folderPath) {
     state.totalSize := 0
     state.lastModified := 0
     state.fileList := ""
-    
+
     Loop, Files, %folderPath%\*, F
     {
         filePath := A_LoopFileFullPath
         if (FileExist(filePath) && !InStr(FileExist(filePath), "D")) {
             state.fileList .= (state.fileList = "" ? "" : "`n") . filePath
             state.fileCount++
-            
+
             FileGetSize, fileSize, %filePath%
             if (fileSize != "") {
                 state.totalSize += fileSize
             }
-            
+
             FileGetTime, fileTime, %filePath%, M
             if (fileTime > state.lastModified) {
                 state.lastModified := fileTime
             }
         }
     }
-    
+
     Return state
 }
 
@@ -681,7 +681,7 @@ FormatSize(size) {
 
 ProcessFileToDatabase(filePath, fileName, fileExt, fileSize) {
     Global SQLiteDB, FolderStates
-    
+
     sizeText := FormatSize(fileSize)
     Identifier := GetFileTypeSymbol(filePath, fileExt)
     musicExts := "mp3,aac,m4a,ogg,flac,alac,ape,wav,aiff,dsf,dff,mid"
@@ -695,27 +695,52 @@ ProcessFileToDatabase(filePath, fileName, fileExt, fileSize) {
     }
     comment := fileName
     HashValue := Crypt.Hash.Str(filePath . fileSize, "SHA256", "UTF-8")
-    
+
     baseFileName := fileName
     if (fileExt != "") {
         baseFileName := SubStr(fileName, 1, StrLen(fileName) - StrLen(fileExt) - 1)
     }
-    
+
     CurrentTableName := "Database"
-    
+
     CheckHashSQL := "SELECT 1 FROM Database WHERE 哈希值 = ? LIMIT 1;"
     CheckHashResult := {}
     if (SQLiteDB.GetTable(CheckHashSQL, CheckHashResult, [HashValue]) && CheckHashResult.RowCount >= 1) {
         SB_SetText("文件内容已存在，跳过插入: " . fileName)
         Return false
     }
-    
+
     transactionStarted := BeginSafeTransaction("ProcessFileToDatabase_Insert")
-    
-    InsertSQL := "INSERT INTO Database (哈希值, 字节, 标签, 标识, 类型, 分组, 备注, 内容, 字符, 行数, 数量, 收藏, 禁删, 创建时间, 修改时间) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 1, datetime('now', 'localtime'), datetime('now', 'localtime'));"
+
+    AllocSQL := "INSERT INTO 中心化 (标记状态) VALUES (0);"
+    if (!SQLiteDB.Exec(AllocSQL)) {
+        ErrorMsg := SQLiteDB._ErrMsg()
+        RollbackSafeTransaction("ProcessFileToDatabase_Insert")
+        MsgBox, 16, 错误, 错误 ID：5142863 ; 分配全局ID失败: %ErrorMsg%
+        Return false
+    }
+
+    LastIDResult := {}
+    FinalID := ""
+    if (SQLiteDB.GetTable("SELECT last_insert_rowid() AS newid;", LastIDResult) && LastIDResult.RowCount > 0) {
+        FinalID := LastIDResult.Rows[1][1]
+    } else {
+        ErrorMsg := SQLiteDB._ErrMsg()
+        RollbackSafeTransaction("ProcessFileToDatabase_Insert")
+        MsgBox, 16, 错误, 错误 ID：5224281 ; 获取全局ID失败: %ErrorMsg%
+        Return false
+    }
+
+    if (FinalID = "" || FinalID <= 0) {
+        RollbackSafeTransaction("ProcessFileToDatabase_Insert")
+        MsgBox, 16, 错误, 错误 ID：5234046 ; 全局ID无效: FinalID = %FinalID%
+        Return false
+    }
+
+    InsertSQL := "INSERT INTO Database (ID, 哈希值, 字节, 标签, 标识, 类型, 分组, 备注, 内容, 字符, 行数, 数量, 收藏, 禁删, 创建时间, 修改时间) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 1, datetime('now', 'localtime'), datetime('now', 'localtime'));"
     InsertSuccess := false
     if (SQLiteDB.ExecuteWithParams) {
-        InsertSuccess := SQLiteDB.ExecuteWithParams(InsertSQL, [HashValue, sizeText, baseFileName, Identifier, Format, groupName, comment, textPreview])
+        InsertSuccess := SQLiteDB.ExecuteWithParams(InsertSQL, [FinalID, HashValue, sizeText, baseFileName, Identifier, Format, groupName, comment, textPreview])
     } else {
         EscapedHashValue := StrReplace(HashValue, "'", "''")
         EscapedSizeText := StrReplace(sizeText, "'", "''")
@@ -725,10 +750,10 @@ ProcessFileToDatabase(filePath, fileName, fileExt, fileSize) {
         EscapedGroupName := StrReplace(groupName, "'", "''")
         EscapedComment := StrReplace(comment, "'", "''")
         EscapedTextPreview := StrReplace(textPreview, "'", "''")
-        FallbackSQL := "INSERT INTO Database (哈希值, 字节, 标签, 标识, 类型, 分组, 备注, 内容, 字符, 行数, 数量, 收藏, 禁删, 创建时间, 修改时间) VALUES ('" . EscapedHashValue . "', '" . EscapedSizeText . "', '" . EscapedBaseFileName . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', '" . EscapedGroupName . "', '" . EscapedComment . "', '" . EscapedTextPreview . "', 1, 1, 1, 1, 1, datetime('now', 'localtime'), datetime('now', 'localtime'));"
+        FallbackSQL := "INSERT INTO Database (ID, 哈希值, 字节, 标签, 标识, 类型, 分组, 备注, 内容, 字符, 行数, 数量, 收藏, 禁删, 创建时间, 修改时间) VALUES (" . FinalID . ", '" . EscapedHashValue . "', '" . EscapedSizeText . "', '" . EscapedBaseFileName . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', '" . EscapedGroupName . "', '" . EscapedComment . "', '" . EscapedTextPreview . "', 1, 1, 1, 1, 1, datetime('now', 'localtime'), datetime('now', 'localtime'));"
         InsertSuccess := SQLiteDB.Exec(FallbackSQL)
     }
-    
+
     if (!InsertSuccess) {
         ErrorMsg := SQLiteDB._ErrMsg()
         MsgBox, 16, 错误, 错误 ID：212552 %ErrorMsg%
@@ -737,14 +762,14 @@ ProcessFileToDatabase(filePath, fileName, fileExt, fileSize) {
         }
         Return false
     }
-    
+
     if (transactionStarted && !CommitSafeTransaction("ProcessFileToDatabase_Insert")) {
         ErrorMsg := SQLiteDB._ErrMsg()
         MsgBox, 16, 错误, 错误 ID：212553
         RollbackSafeTransaction("ProcessFileToDatabase_Insert")
         Return false
     }
-    
+
     SB_SetText("已保存文件记录 - 文件: " . fileName)
     Return true
 }
@@ -799,10 +824,38 @@ SavePathMerged:
 
     transactionStarted := BeginSafeTransaction("SavePathMerged_Insert")
 
-    InsertSQL := "INSERT INTO Database (哈希值, 字节, 标签, 标识, 类型, 分组, 备注, 内容, 字符, 行数, 数量, 收藏, 禁删, 创建时间, 修改时间) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now', 'localtime'), datetime('now', 'localtime'));"
+    AllocSQL := "INSERT INTO 中心化 (标记状态) VALUES (0);"
+    if (!SQLiteDB.Exec(AllocSQL)) {
+        ErrorMsg := SQLiteDB._ErrMsg()
+        RollbackSafeTransaction("SavePathMerged_Insert")
+        MsgBox, 16, 错误, 错误 ID：5142864 ; 分配全局ID失败: %ErrorMsg%
+        ClipboardLock := 0
+        Return
+    }
+
+    LastIDResult := {}
+    FinalID := ""
+    if (SQLiteDB.GetTable("SELECT last_insert_rowid() AS newid;", LastIDResult) && LastIDResult.RowCount > 0) {
+        FinalID := LastIDResult.Rows[1][1]
+    } else {
+        ErrorMsg := SQLiteDB._ErrMsg()
+        RollbackSafeTransaction("SavePathMerged_Insert")
+        MsgBox, 16, 错误, 错误 ID：5224282 ; 获取全局ID失败: %ErrorMsg%
+        ClipboardLock := 0
+        Return
+    }
+
+    if (FinalID = "" || FinalID <= 0) {
+        RollbackSafeTransaction("SavePathMerged_Insert")
+        MsgBox, 16, 错误, 错误 ID：5234047 ; 全局ID无效: FinalID = %FinalID%
+        ClipboardLock := 0
+        Return
+    }
+
+    InsertSQL := "INSERT INTO Database (ID, 哈希值, 字节, 标签, 标识, 类型, 分组, 备注, 内容, 字符, 行数, 数量, 收藏, 禁删, 创建时间, 修改时间) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now', 'localtime'), datetime('now', 'localtime'));"
     InsertSuccess := false
     if (SQLiteDB.ExecuteWithParams) {
-        InsertSuccess := SQLiteDB.ExecuteWithParams(InsertSQL, [HashValue, sizeText, folderName, Identifier, Format, groupName, comment, textPreview, validFiles, validFiles, validFiles])
+        InsertSuccess := SQLiteDB.ExecuteWithParams(InsertSQL, [FinalID, HashValue, sizeText, folderName, Identifier, Format, groupName, comment, textPreview, validFiles, validFiles, validFiles])
     } else {
         EscapedHashValue := StrReplace(HashValue, "'", "''")
         EscapedSizeText := StrReplace(sizeText, "'", "''")
@@ -812,7 +865,7 @@ SavePathMerged:
         EscapedGroupName := StrReplace(groupName, "'", "''")
         EscapedComment := StrReplace(comment, "'", "''")
         EscapedTextPreview := StrReplace(textPreview, "'", "''")
-        FallbackSQL := "INSERT INTO Database (哈希值, 字节, 标签, 标识, 类型, 分组, 备注, 内容, 字符, 行数, 数量, 收藏, 禁删, 创建时间, 修改时间) VALUES ('" . EscapedHashValue . "', '" . EscapedSizeText . "', '" . EscapedFolderName . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', '" . EscapedGroupName . "', '" . EscapedComment . "', '" . EscapedTextPreview . "', " . validFiles . ", " . validFiles . ", " . validFiles . ", 1, 1, datetime('now', 'localtime'), datetime('now', 'localtime'));"
+        FallbackSQL := "INSERT INTO Database (ID, 哈希值, 字节, 标签, 标识, 类型, 分组, 备注, 内容, 字符, 行数, 数量, 收藏, 禁删, 创建时间, 修改时间) VALUES (" . FinalID . ", '" . EscapedHashValue . "', '" . EscapedSizeText . "', '" . EscapedFolderName . "', '" . EscapedIdentifier . "', '" . EscapedFormat . "', '" . EscapedGroupName . "', '" . EscapedComment . "', '" . EscapedTextPreview . "', " . validFiles . ", " . validFiles . ", " . validFiles . ", 1, 1, datetime('now', 'localtime'), datetime('now', 'localtime'));"
         InsertSuccess := SQLiteDB.Exec(FallbackSQL)
     }
 
@@ -855,7 +908,7 @@ ClipboardChanged(type) {
         Return
     }
     SetTimer, WatchDatabaseDir, Off
-  
+
     WinGet, ActiveID, ID, A
     WinGetTitle, WindowTitle, ahk_id %ActiveID%
     if (InStr(WindowTitle, "印象记忆_5")) {
@@ -1048,7 +1101,7 @@ ClipboardChanged(type) {
             Format := "CF_HDROP"
             ClipData := Clipboard
             FilePathsList := ""
-          
+
             Loop, Parse, Clipboard, `n, `r
             {
                 Path := Trim(A_LoopField)
@@ -1057,21 +1110,21 @@ ClipboardChanged(type) {
                     FileCount++
                 }
             }
-          
+
             if (FileCount = 0) {
                 RollbackSafeTransaction("ClipboardChanged")
                 LoadData()
                 Return
             }
-          
+
             Path := AllPaths[1]
             FileAttrib := FileExist(Path)
             isFolderMode := InStr(FileAttrib, "D")
-          
+
             SplitPath, Path, FileName, FileDir, FileExt, FileNameNoExt
             SplitPath, FileDir, , , , ParentDir
             Group := FileDir ? ParentDir : ""
-          
+
             if (isFolderMode) {
                 Loop, % AllPaths.MaxIndex() {
                     CurrentPath := AllPaths[A_Index]
@@ -1079,7 +1132,7 @@ ClipboardChanged(type) {
                     if (!InStr(CurrentAttrib, "D")) {
                         continue
                     }
-                  
+
                     LocalValidCount := 0
                     LocalTotalSize := 0
                     LocalFilePathsList := ""
@@ -1094,7 +1147,7 @@ ClipboardChanged(type) {
                     }
                     LocalFilePathsList := RTrim(LocalFilePathsList, "`n")
                     LocalClipData := LocalFilePathsList
-                  
+
                     LocalSizeStr := ""
                     if (LocalTotalSize > 0) {
                         if (LocalTotalSize < 1024)
@@ -1106,25 +1159,25 @@ ClipboardChanged(type) {
                         else
                             LocalSizeStr := Round(LocalTotalSize / (1024 * 1024 * 1024),2) . " GB"
                     }
-                  
+
                     SplitPath, CurrentPath, LocalFileName, LocalFileDir, , LocalFileNameNoExt
                     SplitPath, LocalFileDir, , , , LocalParentDir
                     LocalGroup := LocalFileDir ? LocalParentDir : ""
-                  
+
                     LocalTempRemark := "Copied Folder - " . LocalFileNameNoExt . " | 数量: 1 | 有效: " . LocalValidCount . " | 大小: " . LocalSizeStr
                     LocalContent := LocalTempRemark
                     LocalRemark := CurrentPath
-                  
+
                     LocalIdentifier := "📁"
                     LocalFormat := "CF_HDROP,📁"
-                  
+
                     ClipData := LocalClipData
                     Content := LocalContent
                     Remark := LocalRemark
                     Identifier := LocalIdentifier
                     Format := LocalFormat
                     Group := LocalGroup
-                  
+
                     gosub, InsertCommon
                     if (FinalID = "" || FinalID <= 0) {
                         return
@@ -1143,7 +1196,7 @@ ClipboardChanged(type) {
                 }
                 FilePathsList := RTrim(FilePathsList, "`n")
                 ClipData := FilePathsList
-              
+
                 SizeStr := ""
                 if (TotalSize > 0) {
                     if (TotalSize < 1024)
@@ -1155,7 +1208,7 @@ ClipboardChanged(type) {
                     else
                         SizeStr := Round(TotalSize / (1024 * 1024 * 1024),2) . " GB"
                 }
-              
+
                 ; 使用 GetFileTypeSymbol 函数获取标识符
                 Identifier := GetFileTypeSymbol(Path, FileExt)
                 Format := "CF_HDROP," . Identifier
@@ -1165,7 +1218,7 @@ ClipboardChanged(type) {
                 TempRemark := "Copied File - " . FileNameNoExt . " | 数量: " . FileCount . " | 有效: " . ValidCount . " | 大小: " . SizeStr
                 Content := TempRemark
                 Remark := FileName
-              
+
                 gosub, InsertCommon
                 if (FinalID = "" || FinalID <= 0) {
                     return
@@ -1279,7 +1332,7 @@ ClipboardChanged(type) {
                     Content := "[文本] | " . CharCount . " 字符 | " . Bytes . " | " . LineCount . " 行"
                 }
             }
-          
+
             gosub, InsertCommon
             if (FinalID = "" || FinalID <= 0) {
                 return
@@ -1435,7 +1488,7 @@ ClipboardChanged(type) {
         Success := false
         RetryCount := 3
         G_last_insert_rowid := ""
-      
+
         if (ExistingID != "") {
             ; 🔥 修改：UPDATE 语句中 类型、分组、应用名称、标识 设为空
             UpdateSQL := "UPDATE 历史数据 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 类型 = '', 分组 = '', 应用名称 = '', 标识 = '', 处理状态 = NULL, 提示时间 = NULL, 提示 = NULL WHERE ID = " . ExistingID . ";"
@@ -1515,7 +1568,7 @@ ClipboardChanged(type) {
                 LoadData()
                 Return
             }
-          
+
             LastIDResult := {}
             G_last_insert_rowid := ""
             FinalID := ""
@@ -1529,17 +1582,17 @@ ClipboardChanged(type) {
                 LoadData()
                 Return
             }
-          
+
             if (FinalID = "" || FinalID <= 0) {
                 RollbackSafeTransaction("ClipboardChanged")
                 MsgBox, 16, 错误, 错误 ID：5234045 ;  全局ID无效: FinalID = %FinalID%
                 LoadData()
                 Return
             }
-          
+
             ; 🔥 修改：INSERT 语句中 类型、分组、应用名称、标识 设为空字符串
             InsertMainSQL := "INSERT INTO 历史数据 (ID, 哈希值, 字节, 窗口详情, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 标识, 处理状态, 提示时间, 提示) VALUES (" . FinalID . ", '" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '', '', '', NULL, NULL, NULL);"
-          
+
             RetryCount := 3
             Success := false
             while (RetryCount > 0) {
@@ -1576,11 +1629,11 @@ ClipboardChanged(type) {
                 ; LoadData()
                 Return
             }
-          
+
             MarkSQL := "UPDATE 中心化 SET 标记状态 = 1 WHERE Local_ID = " . FinalID . ";"
             if (!SQLiteDB.Exec(MarkSQL)) {
             }
-          
+
             InsertDataSQL := "INSERT INTO Data_历史数据 (lParentID, strClipBoardFormat, ooData) VALUES (" . FinalID . ", '" . EscapedFormat . "', '" . EscapedClipData . "');"
             RetryCount := 3
             Success := false
@@ -1606,11 +1659,11 @@ ClipboardChanged(type) {
             G_last_insert_Main_ID := FinalID
             G_last_insert_Main_TableName := "历史数据"
         }
-        
+
         ; 🔥 属性插入部分 - 开始（将 类型、分组、应用名称、标识 插入到关联属性表）
         Attributes := []
         Attributes.Push({Format: "星级", Value: "0"})
-        
+
         ; 将类型字段拆分后插入到关联属性表
         if (Format != "") {
             ; 拆分格式字符串（如 "CF_HDROP,📎,exe" -> ["CF_HDROP", "📎", "exe"]）
@@ -1623,30 +1676,30 @@ ClipboardChanged(type) {
                 }
             }
         }
-        
+
         ; 将标识符也插入到关联属性表
         if (Identifier != "") {
             Attributes.Push({Format: "标识", Value: Identifier})
         }
-        
+
         ; 如果是网址，添加特定关键字
         if (Identifier = "🔗") {
             Attributes.Push({Format: "关键字", Value: "网址"})
             Attributes.Push({Format: "关键字", Value: "链接"})
             Attributes.Push({Format: "关键字", Value: "网站"})
         }
-        
+
         if (DataType = 1 && ClipData != "") {
             if (InStr(ClipData, ";") || InStr(ClipData, "{") || InStr(ClipData, "}") || InStr(ClipData, "function") || InStr(ClipData, "def ") || InStr(ClipData, "#include") || InStr(ClipData, "public ") || InStr(ClipData, "private ") || InStr(ClipData, "class ") || InStr(ClipData, "var ") || InStr(ClipData, "let ") || InStr(ClipData, "const ") || InStr(ClipData, "if (") || InStr(ClipData, "else") || InStr(ClipData, "for (") || InStr(ClipData, "while (")) {
                 Attributes.Push({Format: "关键字", Value: "代码"})
             }
         }
-        
+
         ; 将分组插入到关联属性表
         if (Group != "") {
             Attributes.Push({Format: "分组", Value: Group})
         }
-        
+
         ; 将应用名称插入到关联属性表
         if (AppName != "" && AppName != "未知应用") {
             Attributes.Push({Format: "应用名称", Value: AppName})
@@ -1678,7 +1731,7 @@ ClipboardChanged(type) {
                 }
             }
         }
-        
+
         for index, attr in Attributes {
             Result := InsertAttribute("历史数据", FinalID, attr.Format, attr.Value)
             ErrorMsg := Result.ErrorMsg
@@ -1690,9 +1743,9 @@ ClipboardChanged(type) {
             }
         }
         ; 🔥 属性插入部分 - 结束
-        
+
         return
-      
+
     } catch e {
         eMessage := e.Message
         RollbackSafeTransaction("ClipboardChanged")
