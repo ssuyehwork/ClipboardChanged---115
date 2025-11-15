@@ -5,7 +5,7 @@ ClipboardChanged(type) {
         Return
     }
     SetTimer, WatchDatabaseDir, Off
-  
+
     WinGet, ActiveID, ID, A
     WinGetTitle, WindowTitle, ahk_id %ActiveID%
     if (InStr(WindowTitle, "印象记忆_5")) {
@@ -198,7 +198,7 @@ ClipboardChanged(type) {
             Format := "CF_HDROP"
             ClipData := Clipboard
             FilePathsList := ""
-          
+
             Loop, Parse, Clipboard, `n, `r
             {
                 Path := Trim(A_LoopField)
@@ -207,21 +207,21 @@ ClipboardChanged(type) {
                     FileCount++
                 }
             }
-          
+
             if (FileCount = 0) {
                 RollbackSafeTransaction("ClipboardChanged")
                 LoadData()
                 Return
             }
-          
+
             Path := AllPaths[1]
             FileAttrib := FileExist(Path)
             isFolderMode := InStr(FileAttrib, "D")
-          
+
             SplitPath, Path, FileName, FileDir, FileExt, FileNameNoExt
             SplitPath, FileDir, , , , ParentDir
             Group := FileDir ? ParentDir : ""
-          
+
             if (isFolderMode) {
                 Loop, % AllPaths.MaxIndex() {
                     CurrentPath := AllPaths[A_Index]
@@ -229,7 +229,7 @@ ClipboardChanged(type) {
                     if (!InStr(CurrentAttrib, "D")) {
                         continue
                     }
-                  
+
                     LocalValidCount := 0
                     LocalTotalSize := 0
                     LocalFilePathsList := ""
@@ -244,7 +244,7 @@ ClipboardChanged(type) {
                     }
                     LocalFilePathsList := RTrim(LocalFilePathsList, "`n")
                     LocalClipData := LocalFilePathsList
-                  
+
                     LocalSizeStr := ""
                     if (LocalTotalSize > 0) {
                         if (LocalTotalSize < 1024)
@@ -256,25 +256,25 @@ ClipboardChanged(type) {
                         else
                             LocalSizeStr := Round(LocalTotalSize / (1024 * 1024 * 1024),2) . " GB"
                     }
-                  
+
                     SplitPath, CurrentPath, LocalFileName, LocalFileDir, , LocalFileNameNoExt
                     SplitPath, LocalFileDir, , , , LocalParentDir
                     LocalGroup := LocalFileDir ? LocalParentDir : ""
-                  
+
                     LocalTempRemark := "Copied Folder - " . LocalFileNameNoExt . " | 数量: 1 | 有效: " . LocalValidCount . " | 大小: " . LocalSizeStr
                     LocalContent := LocalTempRemark
                     LocalRemark := CurrentPath
-                  
+
                     LocalIdentifier := "📁"
                     LocalFormat := "CF_HDROP,📁"
-                  
+
                     ClipData := LocalClipData
                     Content := LocalContent
                     Remark := LocalRemark
                     Identifier := LocalIdentifier
                     Format := LocalFormat
                     Group := LocalGroup
-                  
+
                     gosub, InsertCommon
                     if (FinalID = "" || FinalID <= 0) {
                         return
@@ -293,7 +293,7 @@ ClipboardChanged(type) {
                 }
                 FilePathsList := RTrim(FilePathsList, "`n")
                 ClipData := FilePathsList
-              
+
                 SizeStr := ""
                 if (TotalSize > 0) {
                     if (TotalSize < 1024)
@@ -305,7 +305,7 @@ ClipboardChanged(type) {
                     else
                         SizeStr := Round(TotalSize / (1024 * 1024 * 1024),2) . " GB"
                 }
-              
+
                 ; 使用 GetFileTypeSymbol 函数获取标识符
                 Identifier := GetFileTypeSymbol(Path, FileExt)
                 Format := "CF_HDROP," . Identifier
@@ -315,7 +315,7 @@ ClipboardChanged(type) {
                 TempRemark := "Copied File - " . FileNameNoExt . " | 数量: " . FileCount . " | 有效: " . ValidCount . " | 大小: " . SizeStr
                 Content := TempRemark
                 Remark := FileName
-              
+
                 gosub, InsertCommon
                 if (FinalID = "" || FinalID <= 0) {
                     return
@@ -429,7 +429,7 @@ ClipboardChanged(type) {
                     Content := "[文本] | " . CharCount . " 字符 | " . Bytes . " | " . LineCount . " 行"
                 }
             }
-          
+
             gosub, InsertCommon
             if (FinalID = "" || FinalID <= 0) {
                 return
@@ -585,7 +585,7 @@ ClipboardChanged(type) {
         Success := false
         RetryCount := 3
         G_last_insert_rowid := ""
-      
+
         if (ExistingID != "") {
             ; 🔥 修改：UPDATE 语句中 类型、分组、应用名称、标识 设为空
             UpdateSQL := "UPDATE 历史数据 SET 排序 = " . NewSortValue . ", 更新次数 = COALESCE(更新次数, 0) + 1, 修改时间 = datetime('now', 'localtime'), 访问时间 = datetime('now', 'localtime'), 内容 = '" . EscapedContent . "', 字节 = '" . EscapedBytes . "', 窗口详情 = '" . EscapedWindowDetail . "', 类型 = '', 分组 = '', 应用名称 = '', 标识 = '', 处理状态 = NULL, 提示时间 = NULL, 提示 = NULL WHERE ID = " . ExistingID . ";"
@@ -665,7 +665,7 @@ ClipboardChanged(type) {
                 LoadData()
                 Return
             }
-          
+
             LastIDResult := {}
             G_last_insert_rowid := ""
             FinalID := ""
@@ -679,17 +679,17 @@ ClipboardChanged(type) {
                 LoadData()
                 Return
             }
-          
+
             if (FinalID = "" || FinalID <= 0) {
                 RollbackSafeTransaction("ClipboardChanged")
                 MsgBox, 16, 错误, 错误 ID：5234045 ;  全局ID无效: FinalID = %FinalID%
                 LoadData()
                 Return
             }
-          
+
             ; 🔥 修改：INSERT 语句中 类型、分组、应用名称、标识 设为空字符串
             InsertMainSQL := "INSERT INTO 历史数据 (ID, 哈希值, 字节, 窗口详情, 类型, 排序, 更新次数, 创建时间, 修改时间, 访问时间, 备注, 内容, 分组, 应用名称, 标识, 处理状态, 提示时间, 提示) VALUES (" . FinalID . ", '" . EscapedHashValue . "', '" . EscapedBytes . "', '" . EscapedWindowDetail . "', '', " . NewSortValue . ", 0, datetime('now', 'localtime'), datetime('now', 'localtime'), datetime('now', 'localtime'), '" . EscapedRemark . "', '" . EscapedContent . "', '', '', '', NULL, NULL, NULL);"
-          
+
             RetryCount := 3
             Success := false
             while (RetryCount > 0) {
@@ -726,11 +726,11 @@ ClipboardChanged(type) {
                 ; LoadData()
                 Return
             }
-          
+
             MarkSQL := "UPDATE 中心化 SET 标记状态 = 1 WHERE Local_ID = " . FinalID . ";"
             if (!SQLiteDB.Exec(MarkSQL)) {
             }
-          
+
             InsertDataSQL := "INSERT INTO Data_历史数据 (lParentID, strClipBoardFormat, ooData) VALUES (" . FinalID . ", '" . EscapedFormat . "', '" . EscapedClipData . "');"
             RetryCount := 3
             Success := false
@@ -756,11 +756,11 @@ ClipboardChanged(type) {
             G_last_insert_Main_ID := FinalID
             G_last_insert_Main_TableName := "历史数据"
         }
-        
+
         ; 🔥 属性插入部分 - 开始（将 类型、分组、应用名称、标识 插入到关联属性表）
         Attributes := []
         Attributes.Push({Format: "星级", Value: "0"})
-        
+
         ; 将类型字段拆分后插入到关联属性表
         if (Format != "") {
             ; 拆分格式字符串（如 "CF_HDROP,📎,exe" -> ["CF_HDROP", "📎", "exe"]）
@@ -773,23 +773,33 @@ ClipboardChanged(type) {
                 }
             }
         }
-        
+
         ; 将标识符也插入到关联属性表
         if (Identifier != "") {
             Attributes.Push({Format: "标识", Value: Identifier})
         }
-        
+
+        ; 当剪贴板内容是网址时，添加特定关键字
+        if (Identifier = "🔗") {
+            Attributes.Push({Format: "关键字", Value: "网址"})
+            Attributes.Push({Format: "关键字", Value: "链接"})
+            Attributes.Push({Format: "关键字", Value: "网站"})
+        }
+
         if (DataType = 1 && ClipData != "") {
+            if (Identifier != "🔗" && RegExMatch(ClipData, "[^\x{4e00}-\x{9fa5}a-zA-Z0-9\s]")) {
+                Attributes.Push({Format: "关键字", Value: "符号"})
+            }
             if (InStr(ClipData, ";") || InStr(ClipData, "{") || InStr(ClipData, "}") || InStr(ClipData, "function") || InStr(ClipData, "def ") || InStr(ClipData, "#include") || InStr(ClipData, "public ") || InStr(ClipData, "private ") || InStr(ClipData, "class ") || InStr(ClipData, "var ") || InStr(ClipData, "let ") || InStr(ClipData, "const ") || InStr(ClipData, "if (") || InStr(ClipData, "else") || InStr(ClipData, "for (") || InStr(ClipData, "while (")) {
                 Attributes.Push({Format: "关键字", Value: "代码"})
             }
         }
-        
+
         ; 将分组插入到关联属性表
         if (Group != "") {
             Attributes.Push({Format: "分组", Value: Group})
         }
-        
+
         ; 将应用名称插入到关联属性表
         if (AppName != "" && AppName != "未知应用") {
             Attributes.Push({Format: "应用名称", Value: AppName})
@@ -821,7 +831,7 @@ ClipboardChanged(type) {
                 }
             }
         }
-        
+
         for index, attr in Attributes {
             Result := InsertAttribute("历史数据", FinalID, attr.Format, attr.Value)
             ErrorMsg := Result.ErrorMsg
@@ -833,9 +843,9 @@ ClipboardChanged(type) {
             }
         }
         ; 🔥 属性插入部分 - 结束
-        
+
         return
-      
+
     } catch e {
         eMessage := e.Message
         RollbackSafeTransaction("ClipboardChanged")
